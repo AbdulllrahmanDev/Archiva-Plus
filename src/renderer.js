@@ -1463,6 +1463,7 @@ function buildDynamicFilterMenu() {
                 class="filter-search-input" autocomplete="off">
         </div>
         ${[
+            makeSection(currentLang === 'ar' ? 'نوع الوثيقة' : 'Type', 'type', [...types]),
             makeSection(currentLang === 'ar' ? 'تصنيف الوثيقة' : 'Class', 'class', [...classes]),
             makeSection(currentLang === 'ar' ? 'السنة' : 'Year', 'year', [...years].sort().reverse()),
             makeSection(currentLang === 'ar' ? 'المشروع' : 'Project', 'project', [...projects]),

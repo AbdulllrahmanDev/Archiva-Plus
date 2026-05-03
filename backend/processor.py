@@ -19,6 +19,79 @@ import unicodedata
 import difflib
 from db_manager import add_document, get_document_by_sha256, delete_document
 
+# ============================================================
+# PROJECT CODE MAPPINGS (Sader/Outgoing & Wared/Incoming)
+# ============================================================
+
+SADER_MAPPING = {
+    "119": "احمد المرسي",
+    "118": "ساج",
+    "117": "عقود الخارج",
+    "116": "متنوع",
+    "103": "مشروعات اكتوبر",
+    "104": "مشروعات اكتوبر",
+    "115": "مشروعات الاسكندرية وبرج العرب",
+    "114": "مشروعات الصعيد و البحر الاحمر",
+    "106": "مشروعات العاشر من رمضان",
+    "107": "مشروعات العاشر من رمضان",
+    "102": "مشروعات القاهرة الجديدة",
+    "101": "مشروعات القاهرة الجديدة",
+    "100": "مشروعات القاهرة الجديدة",
+    "108": "مشروعات القاهرة و الجيزة",
+    "109": "مشروعات القاهرة و الجيزة",
+    "110": "مشروعات القاهرة و الجيزة",
+    "113": "مشروعات القناة وسيناء",
+    "111": "مشروعات وجه بحري",
+    "112": "مشروعات وجه بحري",
+}
+
+WARED_MAPPING = {
+    "519": "احمد المرسي",
+    "518": "ساج",
+    "517": "عقود الخارج",
+    "516": "متنوع",
+    "503": "مشروعات اكتوبر",
+    "504": "مشروعات اكتوبر",
+    "515": "مشروعات الاسكندرية",
+    "514": "مشروعات الصعيد و البحر الاحمر",
+    "506": "مشروعات العاشر من رمضان",
+    "507": "مشروعات العاشر من رمضان",
+    "500": "مشروعات القاهرة الجديدة",
+    "501": "مشروعات القاهرة الجديدة",
+    "502": "مشروعات القاهرة الجديدة",
+    "508": "مشروعات القاهرة و الجيزة",
+    "509": "مشروعات القاهرة و الجيزة",
+    "510": "مشروعات القاهرة و الجيزة",
+    "513": "مشروعات القناة و سيناء",
+    "511": "مشروعات وجه بحري",
+    "512": "مشروعات وجه بحري",
+}
+
+# Identify projects with multiple codes to add the code to the folder name
+def _get_project_folder_name(code, name, mapping):
+    # Count how many times this project name appears in the mapping
+    occurrences = list(mapping.values()).count(name)
+    if occurrences > 1:
+        return f"{name} {code}"
+    return name
+
+def parse_archiva_code(text):
+    """
+    Parses strings like '2026/103/111' or '2026-103-111'
+    Returns (year, project_code, doc_number) or (None, None, None)
+    """
+    if not text:
+        return None, None, None
+    
+    # Match patterns like 2026/103/111 or 2026-103-111 or 2026.103.111
+    pattern = r'(\d{4})[/\-\.](\d{3})[/\-\.](\d+)'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    
+    return None, None, None
+
+
 # Force UTF-8 for Windows output
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(
@@ -185,6 +258,8 @@ def real_ai_analyze(text, filename, file_path=None):
     - إذا لم تذكر المحافظة صراحة، حاول استنتاجها من اسم المشروع أو الجهة (مثلاً: "حي المعادي" يتبع محافظة "القاهرة").
     - إذا فشلت تماماً في إيجاد أي إشارة لكيان أو مكان للمشروع، حينها فقط اكتب 'عام' للمشروع و 'غير محددة' للمحافظة.
     - استخرج "رقم الصادر/الوارد" كـ version_no.
+    - **هام جداً**: ابحث عن كود الوثيقة الذي يكون بصيغة (السنة/كود المشروع/رقم الجواب) مثل 2026/103/111.
+    - إذا وجدت هذا الكود، ضعه كما هو في حقل version_no.
 
     محتوى النص المستخرج (للمساعدة):
     {truncated_text}
@@ -727,134 +802,89 @@ def find_smart_project_match(new_project, year_path, use_fuzzy=True):
 
 def organize_file_copy(doc_data, base_archive_path, smart_match=True):
     """
-    Creates a hierarchical copy of the file: Year / Project / File
-    هيكل المجلدات: السنة / المشروع / الملف
-    - إذا كان الموضوع فارغاً → يُسمى الملف باسمه الأصلي ويُوضع في مجلد 'غير_محدد'
-    - إذا كان المشروع فارغاً أو 'عام' → يُوضع في مجلد 'عام' تحت السنة
+    Creates a hierarchical copy of the file: Year / Type (صادر/وارد) / Project / File
     """
     try:
-        # ── 1. استخراج السنة ───────────────────────────────────────────────
+        # ── 1. استخراج الكود وتحليله ─────────────────────────────────────────
+        version_no = (doc_data.get("version_no") or "").strip()
+        year_code, project_code, doc_num = parse_archiva_code(version_no)
+        
+        # Fallback to date_added if year not found in code
         doc_date = doc_data.get("doc_date") or ""
-        year = (
+        year = year_code or (
             doc_date.split("-")[0]
             if doc_date and "-" in doc_date and len(doc_date) >= 4
             else datetime.datetime.now().strftime("%Y")
         )
 
-        # ── 2. تحديد اسم المشروع مع Fallback واضح ─────────────────────────
-        project_raw = (doc_data.get("project") or "").strip()
-
-        # "عام"       = AI صنّف الوثيقة صراحةً كـ عامة → مجلد "عام" (سلوك مقصود)
-        # ""/"غير محدد" = فشل التحليل أو لا مشروع → مجلد "غير_محدد"
-        TRULY_UNKNOWN_VALUES = {"", "غير محدد", "غير_محدد", "n/a", "unknown"}
-        GENERAL_VALUES       = {"عام"}
-
-        if project_raw.lower() in TRULY_UNKNOWN_VALUES:
-            # فشل التحليل أو لم يتم تحديد مشروع → لا نحرك الملف من مكانه الأصلي
-            print(f"Organize: No project detected. Keeping file at: {doc_data.get('file_path')}", flush=True)
-            return doc_data.get("file_path")
-        elif project_raw.lower() in GENERAL_VALUES:
-            # وثيقة عامة مقصودة → مجلد "عام"
-            project = "عام"
-            print(f"Organize: General document, placing in 'عام'", flush=True)
-        else:
-            # ── 3. بناء مسار السنة للبحث عن مجلد مطابق ─────────────────────
-            year_dir = os.path.join(base_archive_path, year)
-            os.makedirs(year_dir, exist_ok=True)
-            
-            # ── 3.1. تحديد المحافظة ──────────────────────────────────────────
-            gov_raw = (doc_data.get("governorate") or "").strip()
-            if gov_raw.lower() in TRULY_UNKNOWN_VALUES or gov_raw == "مصر":
-                governorate = "غير_محددة"
-            else:
-                governorate = sanitize_folder_name(gov_raw)
-            
-            gov_dir = os.path.join(year_dir, governorate)
-            os.makedirs(gov_dir, exist_ok=True)
-
-            project = find_smart_project_match(project_raw, gov_dir, use_fuzzy=smart_match)
-            if isinstance(project, dict) and project.get("needs_confirmation"):
-                # Pass governorate back in the needs_confirmation dict if needed
-                project["governorate"] = governorate
-                return project
-            print(f"Organize: Project resolved to '{project}' (from '{project_raw}') in Gov '{governorate}'", flush=True)
-
-        # ── 4. بناء مسار المجلد الهدف ──────────────────────────────────────
-        # الهيكل الجديد: السنة / المحافظة / المشروع
-        if project in ("عام", "غير_محدد"):
-             # For general/unknown projects, we might skip the governorate level or keep it
-             # Let's keep it consistent: Year / Governorate / Project
-             target_dir = os.path.join(base_archive_path, year, governorate if 'governorate' in locals() else "غير_محددة", project)
-        else:
-             target_dir = os.path.join(base_archive_path, year, governorate, project)
+        # ── 2. تحديد النوع (صادر/وارد) واسم المشروع ─────────────────────────
+        doc_type = "غير_مصنف"
+        project_name = "عام"
         
+        if project_code:
+            if project_code in SADER_MAPPING:
+                doc_type = "صادر"
+                project_name = _get_project_folder_name(project_code, SADER_MAPPING[project_code], SADER_MAPPING)
+            elif project_code in WARED_MAPPING:
+                doc_type = "وارد"
+                project_name = _get_project_folder_name(project_code, WARED_MAPPING[project_code], WARED_MAPPING)
+        
+        # If no code was found, try to use the project field from AI
+        if project_name == "عام" and doc_data.get("project") not in ("", "عام", "غير محدد", "غير_محدد"):
+            project_name = doc_data.get("project")
+
+        # ── 3. بناء مسار المجلد الهدف ──────────────────────────────────────
+        # الهيكل المطلوب: السنة / [صادر أو وارد] / اسم المشروع
+        target_dir = os.path.join(base_archive_path, year, doc_type, sanitize_folder_name(project_name))
         os.makedirs(target_dir, exist_ok=True)
 
-        # ── 5. تحديد اسم الملف الجديد من "الموضوع" ────────────────────────
-        subject_raw = (doc_data.get("subject") or "").strip()
-        UNKNOWN_SUBJECT_VALUES = {"", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة", "n/a", "unknown"}
-        if subject_raw.lower() in UNKNOWN_SUBJECT_VALUES:
-            # لا يوجد موضوع → استخدم اسم الملف الأصلي بدون امتداد
-            original_name = os.path.splitext(doc_data.get("file", "document"))[0]
-            clean_subject = sanitize_folder_name(original_name) or "وثيقة_غير_معروفة"
-            print(f"Organize: No subject detected, using original filename '{clean_subject}'", flush=True)
+        # ── 4. تحديد اسم الملف النهائي ────────────────────────────────────
+        # اسم الملف يكون هو الكود بالكامل إذا وجد، وإلا نستخدم الموضوع
+        if version_no and year_code:
+            # تنظيف الكود ليكون اسم ملف صالح (تحويل / إلى -)
+            clean_filename = version_no.replace("/", "-").replace("\\", "-")
         else:
-            clean_subject = sanitize_folder_name(subject_raw)
-
-        # ── 6. الاحتفاظ بالامتداد الأصلي ──────────────────────────────────
-        ext = os.path.splitext(doc_data.get("file", ".pdf"))[1]
-        if not ext:
-            ext = ".pdf"
-
-        # ── 7. بناء اسم الملف النهائي ──────────────────────────────────────
-        new_filename = f"{clean_subject}{ext}"
+            subject_raw = (doc_data.get("subject") or "").strip()
+            if subject_raw.lower() in {"", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة"}:
+                clean_filename = os.path.splitext(doc_data.get("file", "document"))[0]
+            else:
+                clean_filename = subject_raw
+        
+        clean_filename = sanitize_folder_name(clean_filename)
+        ext = os.path.splitext(doc_data.get("file", ".pdf"))[1] or ".pdf"
+        
+        new_filename = f"{clean_filename}{ext}"
         target_file_path = os.path.join(target_dir, new_filename)
 
-        # ── 8. معالجة تعارض الأسماء ────────────────────────────────────────
+        # ── 5. معالجة تعارض الأسماء ────────────────────────────────────────
         if os.path.exists(target_file_path):
-            # تحقق أولاً: هل الملف الموجود هو نفس الملف المصدر بالمحتوى؟
             source_path_check = doc_data.get("file_path")
             if source_path_check and os.path.exists(source_path_check):
                 try:
-                    existing_hash = get_file_hash(target_file_path)
-                    source_hash   = get_file_hash(source_path_check)
-                    if existing_hash == source_hash:
-                        # نفس المحتوى → احذف المصدر المكرر واستخدم الموجود
+                    if get_file_hash(target_file_path) == get_file_hash(source_path_check):
                         if os.path.abspath(source_path_check) != os.path.abspath(target_file_path):
                             os.remove(source_path_check)
-                            print(f"Deduplicated: Removed duplicate source, using existing: {target_file_path}", flush=True)
                         return target_file_path
-                except Exception:
-                    pass
-            # مختلف المحتوى → أضف suffix
+                except Exception: pass
+            
             unique_suffix = int(time.time()) % 10000
-            new_filename = f"{clean_subject}_{unique_suffix}{ext}"
+            new_filename = f"{clean_filename}_{unique_suffix}{ext}"
             target_file_path = os.path.join(target_dir, new_filename)
 
-        # ── 9. نقل الملف الأصلي ────────────────────────────────────────────
+        # ── 6. نقل الملف ───────────────────────────────────────────────────
         source_path = doc_data.get("file_path")
         if source_path and os.path.exists(source_path):
-            if source_path != target_file_path:
+            if os.path.abspath(source_path) != os.path.abspath(target_file_path):
                 shutil.move(source_path, target_file_path)
-                print(f"File moved to: {target_file_path}", flush=True)
-                
-                # تنظيف المجلدات الفارغة بعد النقل
-                source_dir = os.path.dirname(source_path)
-                cleanup_empty_dirs(source_dir, base_archive_path)
-            else:
-                print(f"File already at target: {target_file_path}", flush=True)
-        else:
-            print(f"WARNING: Source file not found: {source_path}", flush=True)
-            return None
-
-        return target_file_path
+                cleanup_empty_dirs(os.path.dirname(source_path), base_archive_path)
+            return target_file_path
+        
+        return None
 
     except Exception as e:
-        print(f"Error organizing file copy: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        print(f"Error organizing file: {e}", flush=True)
+        return None
 
-    return None
 
 
 def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False, doc_id=None, split_pdf=False, smart_match=True, skip_organize=False):

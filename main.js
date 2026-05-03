@@ -19,6 +19,77 @@ if (fs.existsSync(envPathEnc)) {
     loadEncryptedEnv(envPathEnc);
 }
 
+// ============================================================
+// PROJECT CODE MAPPINGS (Sader/Outgoing & Wared/Incoming)
+// ============================================================
+
+const SADER_MAPPING = {
+    "119": "احمد المرسي",
+    "118": "ساج",
+    "117": "عقود الخارج",
+    "116": "متنوع",
+    "103": "مشروعات اكتوبر",
+    "104": "مشروعات اكتوبر",
+    "115": "مشروعات الاسكندرية وبرج العرب",
+    "114": "مشروعات الصعيد و البحر الاحمر",
+    "106": "مشروعات العاشر من رمضان",
+    "107": "مشروعات العاشر من رمضان",
+    "102": "مشروعات القاهرة الجديدة",
+    "101": "مشروعات القاهرة الجديدة",
+    "100": "مشروعات القاهرة الجديدة",
+    "108": "مشروعات القاهرة و الجيزة",
+    "109": "مشروعات القاهرة و الجيزة",
+    "110": "مشروعات القاهرة و الجيزة",
+    "113": "مشروعات القناة وسيناء",
+    "111": "مشروعات وجه بحري",
+    "112": "مشروعات وجه بحري",
+};
+
+const WARED_MAPPING = {
+    "519": "احمد المرسي",
+    "518": "ساج",
+    "517": "عقود الخارج",
+    "516": "متنوع",
+    "503": "مشروعات اكتوبر",
+    "504": "مشروعات اكتوبر",
+    "515": "مشروعات الاسكندرية",
+    "514": "مشروعات الصعيد و البحر الاحمر",
+    "506": "مشروعات العاشر من رمضان",
+    "507": "مشروعات العاشر من رمضان",
+    "500": "مشروعات القاهرة الجديدة",
+    "501": "مشروعات القاهرة الجديدة",
+    "502": "مشروعات القاهرة الجديدة",
+    "508": "مشروعات القاهرة و الجيزة",
+    "509": "مشروعات القاهرة و الجيزة",
+    "510": "مشروعات القاهرة و الجيزة",
+    "513": "مشروعات القناة و سيناء",
+    "511": "مشروعات وجه بحري",
+    "512": "مشروعات وجه بحري",
+};
+
+function getProjectFolderName(code, name, mapping) {
+    const occurrences = Object.values(mapping).filter(v => v === name).length;
+    if (occurrences > 1) {
+        return `${name} ${code}`;
+    }
+    return name;
+}
+
+function parseArchivaCode(text) {
+    if (!text) return { year: null, projectCode: null, docNum: null };
+    const match = text.match(/(\d{4})[/\-\.](\d{3})[/\-\.](\d+)/);
+    if (match) {
+        return { year: match[1], projectCode: match[2], docNum: match[3] };
+    }
+    return { year: null, projectCode: null, docNum: null };
+}
+
+function sanitizeFolderName(name) {
+    if (!name) return "غير_محدد";
+    return name.normalize("NFC").replace(/[<>:"/\\|?*]/g, "").trim() || "غير_محدد";
+}
+
+
 
 // Live Reload for Development (only in dev mode)
 if (!app.isPackaged) {
@@ -754,190 +825,146 @@ ipcMain.handle('confirm-project-similarity', async (event, docData, finalProject
 
 // Centralized logic for moving files and saving to DB/Sidecar
 async function organizeFileAndSaveDb(docData, baseFolder) {
-    const dateStr = docData.doc_date || docData.date_added || "";
-    const year = (dateStr.includes('-') && dateStr.length >= 4) ? dateStr.split('-')[0] : new Date().getFullYear().toString();
-    
-    let projectRaw = (docData.project || "").trim();
-    const trulyUnknownProjects = ["", "غير محدد", "غير_محدد", "n/a", "unknown"];
-    let project;
-    if (trulyUnknownProjects.includes(projectRaw.toLowerCase())) {
-        project = "غير_محدد";
-    } else if (projectRaw.toLowerCase() === "عام") {
-        project = "عام";
-    } else {
-        project = projectRaw.replace(/[<>:"/\\|?*]/g, "").trim() || "غير_محدد";
-    }
-
-    // Determine governorate folder
-    let govRaw = (docData.governorate || "").trim();
-    const trulyUnknownGov = ["", "غير محدد", "غير_محدد", "غير محددة", "غير_محددة", "n/a", "unknown"];
-    let governorate;
-    if (trulyUnknownGov.includes(govRaw.toLowerCase())) {
-        governorate = "غير_محددة";
-    } else {
-        governorate = govRaw.replace(/[<>:"/\\|?*]/g, "").trim() || "غير_محددة";
-    }
-    
-    // New hierarchy: Year / Governorate / Project
-    const targetDir = path.join(baseFolder, year, governorate, project);
-    if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-    }
-    
-    let subjectRaw = (docData.subject || "").trim();
-    const unknownSubjects = ["", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة", "n/a", "unknown"];
-    let cleanSubject = unknownSubjects.includes(subjectRaw.toLowerCase()) ? (path.parse(docData.file).name) : subjectRaw.replace(/[<>:"/\\|?*]/g, "").trim() || "وثيقة_غير_معروفة";
-    
-    const ext = path.extname(docData.file) || '.pdf';
-    let newFilename = `${cleanSubject}${ext}`;
-    let targetPath = path.join(targetDir, newFilename);
-    
-    if (targetPath !== docData.file_path && fs.existsSync(targetPath)) {
-        // ── Check if the existing file is the SAME document ────────────────
-        // (e.g. from a partial previous move where the file arrived but DB wasn't updated)
-        let isSameDoc = false;
-
-        // 1. Check by sidecar ID
-        const existingSidecarPath = targetPath.replace(new RegExp(`\\${ext}$`), '.json');
-        if (fs.existsSync(existingSidecarPath)) {
-            try {
-                const existingData = JSON.parse(fs.readFileSync(existingSidecarPath, 'utf8'));
-                if (existingData.id && existingData.id === docData.id) {
-                    isSameDoc = true;
-                    console.log(`[Organize] Target file is same document (sidecar match), reusing: ${targetPath}`);
-                }
-            } catch(e) {}
-        }
-
-        // 2. Fallback: check by SHA256 hash if available
-        if (!isSameDoc && docData.sha256) {
-            try {
-                const crypto = require('crypto');
-                const buf = fs.readFileSync(targetPath);
-                const hash = crypto.createHash('sha256').update(buf).digest('hex');
-                if (hash === docData.sha256) {
-                    isSameDoc = true;
-                    console.log(`[Organize] Target file is same document (SHA256 match), reusing: ${targetPath}`);
-                }
-            } catch(e) {}
-        }
-
-        if (isSameDoc) {
-            // Same document already at target (partial previous move) —
-            // delete the stale source file/sidecar and repoint to target.
-            if (docData.file_path !== targetPath && fs.existsSync(docData.file_path)) {
-                try {
-                    fs.unlinkSync(docData.file_path);
-                    const oldSc = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
-                    if (fs.existsSync(oldSc)) fs.unlinkSync(oldSc);
-                    cleanupEmptyDirsSync(path.dirname(docData.file_path), watchFolder);
-                } catch(e) { console.error('Error cleaning up stale source:', e); }
+    try {
+        const versionNo = (docData.version_no || "").trim();
+        const { year: yearCode, projectCode } = parseArchivaCode(versionNo);
+        
+        const dateStr = docData.doc_date || docData.date_added || "";
+        const year = yearCode || ((dateStr.includes('-') && dateStr.length >= 4) ? dateStr.split('-')[0] : new Date().getFullYear().toString());
+        
+        let docType = "غير_مصنف";
+        let projectName = "عام";
+        
+        if (projectCode) {
+            if (SADER_MAPPING[projectCode]) {
+                docType = "صادر";
+                projectName = getProjectFolderName(projectCode, SADER_MAPPING[projectCode], SADER_MAPPING);
+            } else if (WARED_MAPPING[projectCode]) {
+                docType = "وارد";
+                projectName = getProjectFolderName(projectCode, WARED_MAPPING[projectCode], WARED_MAPPING);
             }
-            docData.file_path = targetPath;
-            docData.file = newFilename;
-            // File is already in place — skip the rename below
-        } else {
-            // Different document at target → add suffix to avoid collision
-            const uniqueSuffix = Date.now() % 10000;
-            newFilename = `${cleanSubject}_${uniqueSuffix}${ext}`;
-            targetPath = path.join(targetDir, newFilename);
         }
-    }
+        
+        if (projectName === "عام" && docData.project && !["", "عام", "غير محدد", "غير_محدد"].includes(docData.project)) {
+            projectName = docData.project;
+        }
+
+        docData.type = docType; // Update type in docData for DB saving
+
+        const targetDir = path.join(baseFolder, year, docType, sanitizeFolderName(projectName));
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+        }
+        
+        let cleanSubject;
+        if (versionNo && yearCode) {
+            cleanSubject = versionNo.replace(/\//g, "-").replace(/\\/g, "-");
+        } else {
+            const subjectRaw = (docData.subject || "").trim();
+            const unknownSubjects = ["", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة", "n/a", "unknown"];
+            cleanSubject = unknownSubjects.includes(subjectRaw.toLowerCase()) ? (path.parse(docData.file).name) : subjectRaw;
+        }
+        
+        const ext = path.extname(docData.file) || '.pdf';
+        let newFilename = `${sanitizeFolderName(cleanSubject)}${ext}`;
+        let targetPath = path.join(targetDir, newFilename);
     
-    if (targetPath !== docData.file_path && fs.existsSync(docData.file_path)) {
-        try {
+        if (targetPath !== docData.file_path && fs.existsSync(targetPath)) {
+            let isSameDoc = false;
+            const existingSidecarPath = targetPath.replace(new RegExp(`\\${ext}$`), '.json');
+            if (fs.existsSync(existingSidecarPath)) {
+                try {
+                    const existingData = JSON.parse(fs.readFileSync(existingSidecarPath, 'utf8'));
+                    if (existingData.id && existingData.id === docData.id) isSameDoc = true;
+                } catch(e) {}
+            }
+            if (!isSameDoc && docData.sha256) {
+                try {
+                    const crypto = require('crypto');
+                    const hash = crypto.createHash('sha256').update(fs.readFileSync(targetPath)).digest('hex');
+                    if (hash === docData.sha256) isSameDoc = true;
+                } catch(e) {}
+            }
+
+            if (isSameDoc) {
+                if (docData.file_path !== targetPath && fs.existsSync(docData.file_path)) {
+                    try {
+                        fs.unlinkSync(docData.file_path);
+                        const oldSc = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
+                        if (fs.existsSync(oldSc)) fs.unlinkSync(oldSc);
+                        cleanupEmptyDirsSync(path.dirname(docData.file_path), watchFolder);
+                    } catch(e) {}
+                }
+                docData.file_path = targetPath;
+                docData.file = newFilename;
+            } else {
+                const uniqueSuffix = Date.now() % 10000;
+                newFilename = `${cleanSubject}_${uniqueSuffix}${ext}`;
+                targetPath = path.join(targetDir, newFilename);
+            }
+        }
+        
+        if (targetPath !== docData.file_path && fs.existsSync(docData.file_path)) {
             const oldDir = path.dirname(docData.file_path);
-            
-            // Professional Check: Is the file open/locked? (Simplified check by trying to rename)
             try {
                 fs.renameSync(docData.file_path, targetPath);
             } catch (moveErr) {
-                let userFriendlyError = "فشل نقل الملف. تأكد أن الملف ليس مفتوحاً في برنامج آخر.";
-                if (moveErr.code === 'EBUSY') userFriendlyError = "الملف قيد الاستخدام حالياً، يرجى إغلاقه والمحاولة مرة أخرى.";
-                if (moveErr.code === 'EPERM') userFriendlyError = "لا توجد صلاحية لنقل الملف، يرجى التأكد من صلاحيات المجلد.";
-                
-                console.error("Move Error:", moveErr);
-                return { success: false, error: userFriendlyError };
+                let msg = "فشل نقل الملف. تأكد أن الملف ليس مفتوحاً في برنامج آخر.";
+                if (moveErr.code === 'EBUSY') msg = "الملف قيد الاستخدام حالياً.";
+                return { success: false, error: msg };
             }
 
-            // Move sidecar if exists
             const oldSidecar = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
             const newSidecar = targetPath.replace(new RegExp(`\\${ext}$`), '.json');
             if (fs.existsSync(oldSidecar)) {
-                if (process.platform === 'win32') {
-                    try { require('child_process').execSync(`attrib -h "${oldSidecar}"`); } catch(e) {}
-                }
                 try {
+                    if (process.platform === 'win32') require('child_process').execSync(`attrib -h "${oldSidecar}"`);
                     fs.renameSync(oldSidecar, newSidecar);
-                    if (process.platform === 'win32') {
-                        try { require('child_process').exec(`attrib +h "${newSidecar}"`, () => {}); } catch(e) {}
-                    }
-                } catch(scErr) {
-                    console.warn("Could not move sidecar:", scErr);
-                }
+                    if (process.platform === 'win32') require('child_process').exec(`attrib +h "${newSidecar}"`, () => {});
+                } catch(e) {}
             }
             docData.file_path = targetPath;
             docData.file = newFilename;
-            
-            // Clean up old directory if empty
             cleanupEmptyDirsSync(oldDir, watchFolder);
-        } catch(e) {
-            console.error("Fatal move error:", e);
-            return { success: false, error: "خطأ غير متوقع أثناء تنظيم الملفات." };
         }
-    }
 
-    // Save Sidecar
-    const sidecarPath = docData.file_path.replace(new RegExp(`${ext}$`), '.json');
-    const sidecarData = { ...docData };
-    delete sidecarData.content; // Never store large content in sidecar JSON
-    sidecarData.content_preview = docData.content ? docData.content.substring(0, 500) : "";
-    
-    try {
-        // On Windows, writing to a HIDDEN file throws EPERM. Un-hide first if exists.
+        const sidecarPath = docData.file_path.replace(new RegExp(`${ext}$`), '.json');
+        const sidecarData = { ...docData };
+        delete sidecarData.content;
+        sidecarData.content_preview = docData.content ? docData.content.substring(0, 500) : "";
+        
         if (process.platform === 'win32' && fs.existsSync(sidecarPath)) {
             try { require('child_process').execSync(`attrib -h "${sidecarPath}"`); } catch(e) {}
         }
-        
         fs.writeFileSync(sidecarPath, JSON.stringify(sidecarData, null, 2), 'utf8');
-        
         if (process.platform === 'win32') {
             try { require('child_process').exec(`attrib +h "${sidecarPath}"`, () => {}); } catch(e) {}
         }
-    } catch(e) { 
-        console.error("Error saving sidecar:", e); 
-    }
 
-    return new Promise((resolve) => {
-        // Prepare tags
-        const tagsJson = Array.isArray(docData.tags) ? JSON.stringify(docData.tags) : "[]";
-        
-        db.run(
-            `INSERT OR REPLACE INTO documents 
-            (id, file, file_path, title, date_added, type, class, area, tags, summary, content, sha256, status, intel_card, subject, project, doc_date, version_no, governorate, is_manual) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [docData.id, docData.file, docData.file_path, docData.title, docData.date_added, docData.type, docData.class, docData.area, tagsJson, docData.summary, docData.content || "", docData.sha256 || "", 'ready', docData.intel_card || "", docData.subject, docData.project, docData.doc_date, docData.version_no, docData.governorate || "", docData.is_manual || 0],
-            (err) => {
-                if (err) console.error("DB Insert error:", err);
-                sendUpdateToRenderer();
-                
-                // Finish syncing status
-                if (mainWindow) {
-                    mainWindow.webContents.send('status-update', { type: "status", msg: "sync_complete", doc_id: docData.id });
-                    mainWindow.webContents.send('status-update', { type: "status", msg: "status_idle", progress: 0 });
+        return new Promise((resolve) => {
+            const tagsJson = Array.isArray(docData.tags) ? JSON.stringify(docData.tags) : "[]";
+            db.run(
+                `INSERT OR REPLACE INTO documents 
+                (id, file, file_path, title, date_added, type, class, area, tags, summary, content, sha256, status, intel_card, subject, project, doc_date, version_no, governorate, is_manual) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [docData.id, docData.file, docData.file_path, docData.title, docData.date_added, docData.type, docData.class, docData.area, tagsJson, docData.summary, docData.content || "", docData.sha256 || "", 'ready', docData.intel_card || "", docData.subject, docData.project, docData.doc_date, docData.version_no, docData.governorate || "", docData.is_manual || 0],
+                (err) => {
+                    sendUpdateToRenderer();
+                    if (mainWindow) {
+                        mainWindow.webContents.send('status-update', { type: "status", msg: "sync_complete", doc_id: docData.id });
+                        mainWindow.webContents.send('status-update', { type: "status", msg: "status_idle", progress: 0 });
+                    }
+                    checkBatchProgress(docData.id);
+                    resolve({ success: !err, newPath: docData.file_path, newFile: docData.file });
                 }
-                
-                checkBatchProgress(docData.id);
-                
-                resolve({ 
-                    success: !err, 
-                    newPath: docData.file_path, 
-                    newFile: docData.file 
-                });
-            }
-        );
-    });
+            );
+        });
+    } catch (e) {
+        console.error("Fatal move error:", e);
+        return { success: false, error: "خطأ غير متوقع أثناء تنظيم الملفات." };
+    }
 }
+
 
 ipcMain.handle('stop-backend', async () => {
     console.log('[FORCE STOP] Terminating all active processes...');
