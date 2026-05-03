@@ -1,0 +1,83 @@
+{
+  "name": "archiva",
+  "version": "2.1.6",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder -w",
+    "encrypt-env": "node scripts/encrypt-env.js",
+    "view-env": "node scripts/view-env.js"
+  },
+  "build": {
+    "appId": "com.archiva.app",
+    "productName": "Archiva",
+    "directories": {
+      "output": "dist"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "AbdulllrahmanDev",
+        "repo": "Archiva"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": ".icon-ico/icon.ico"
+    },
+    "portable": {
+      "splashImage": "logo/splash.bmp"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "installerIcon": ".icon-ico/icon.ico",
+      "uninstallerIcon": ".icon-ico/icon.ico",
+      "runAfterFinish": true
+    },
+    "appx": {
+      "identityName": "Archiva",
+      "publisher": "CN=Archiva",
+      "publisherDisplayName": "Archiva"
+    },
+    "asar": true,
+    "compression": "maximum",
+    "files": [
+      "src/**/*",
+      "main.js",
+      "env-crypto.js",
+      "logo/**/*",
+      "package.json",
+      "node_modules/**/*",
+      ".env.enc"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/watcher.exe",
+        "to": "backend/watcher.exe"
+      }
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "@openrouter/sdk": "^0.12.19",
+    "dotenv": "^17.4.2",
+    "electron-reload": "^2.0.0-alpha.1",
+    "electron-updater": "^6.8.3",
+    "marked": "^18.0.0",
+    "pdf-parse": "^2.4.5",
+    "sqlite3": "^6.0.1"
+  }
+}
