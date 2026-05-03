@@ -13,7 +13,7 @@ let currentView = localStorage.getItem('archiva-last-view') || 'add';
 let archiveLayout = 'grid';
 let isSelectionMode = false;
 let selectedDocIds = new Set();
-let activeFilters = { type: [], class: [], area: [], year: [], project: [], recency: false };
+let activeFilters = { type: [], class: [], year: [], project: [], recency: false };
 
 let viewsInitialized = false;
 let activeDocId = null; 
@@ -115,13 +115,13 @@ const i18n = {
         intel_summary: "Intelligence Summary", open_file: "Open File", open_folder: "Open Folder", export: "Export",
         recent_files: "Recent Files",
         last_analyzed: "Last Analyzed", action_control: "Action Control",
-        search_placeholder: "Search library...", doc_class: "Document Class", region_area: "Region / Area",
+        search_placeholder: "Search library...", doc_class: "Document Class",
         reset_all: "Reset All", done: "Done", quick_filters: "Quick Filters:", pdf_only: "PDF Only", images_only: "Images Only",
         search_analytics: "Search Analytics", keyword_density: "Keyword Density", primary_cluster: "Primary Content Cluster",
         scanning: "Scanning Library...", found_assets: "Found {count} relevant assets",
         enter_term: "Enter a term to begin", analyzed: "Analyzed", system_idle: "System Idle",
         archiving_msg: "Archiving {count} documents...", staged_msg: "Files staged. Processing in background...", exported_msg: "Exported successfully",
-        archive_empty: "Archive is empty.", asset_intel: "Asset Intelligence", archived: "Archived", region: "Region",
+        archive_empty: "Archive is empty.", asset_intel: "Asset Intelligence", archived: "Archived",
         ai_engine: "Intelligence Engine", ai_status: "Systems Operational", ai_desc: "Archiva AI is scanning your documents for deep pattern recognition.",
         archived_title: "Archive",
         ai_welcome: "Hello. I am the Archiva Intelligence Engine. I can analyze your documents, extract insights, and answer questions. Upload an image or type a message to begin.",
@@ -217,13 +217,13 @@ const i18n = {
         intel_summary: "ملخص المحتوى", open_file: "فتح الملف", open_folder: "فتح المجلد", export: "تصدير",
         recent_files: "أحدث الملفات",
         last_analyzed: "آخر تحليل", action_control: "التحكم",
-        search_placeholder: "ابحث في الأرشيف...", doc_class: "تصنيف المستند", region_area: "المنطقة",
+        search_placeholder: "ابحث في الأرشيف...", doc_class: "تصنيف المستند",
         reset_all: "إعادة تعيين", done: "تم", quick_filters: "فلاتر سريعة:", pdf_only: "PDF فقط", images_only: "صور فقط",
         search_analytics: "تحليلات البحث", keyword_density: "كثافة الكلمات", primary_cluster: "المجموعة الأساسية",
         scanning: "جاري الفحص...", found_assets: "تم العثور على {count} من الأصول",
         enter_term: "أدخل كلمة للبحث", analyzed: "تم التحليل", system_idle: "نظام مستعد",
         archiving_msg: "أرشفة {count} مستندات...", staged_msg: "تم الإرسال.", exported_msg: "تم التصدير بنجاح",
-        archive_empty: "الأرشيف فارغ.", asset_intel: "الملفات المؤرشفة", archived: "تمت الأرشفة", region: "المنطقة",
+        archive_empty: "الأرشيف فارغ.", asset_intel: "الملفات المؤرشفة", archived: "تمت الأرشفة",
         ai_engine: "محرك الذكاء", ai_status: "الأنظمة تعمل", ai_desc: "يقوم نظام Archiva AI بفحص مستنداتك للتعرف على الأنماط العميقة.",
         archived_title: "مؤرشف",
         ai_welcome: "مرحباً. أنا محرك الذكاء الخاص بـ Archiva. يمكنني تحليل مستنداتك واستخراج الرؤى والإجابة على أسئلتك. أرفق صورة أو اكتب رسالة للبدء.",
@@ -2072,19 +2072,6 @@ function selectDocument(id, isSoftUpdate = false) {
                         <p class="field-value text-sm font-bold text-on-surface leading-snug pl-7">${doc.project || '—'}</p>
                     </div>
 
-                    <!-- المحافظة -->
-                    <div id="field-governorate-${doc.id}" class="p-4 rounded-2xl bg-surface-container-low border border-outline-variant/5 hover:border-primary/20 transition-all group/field cursor-context-menu" oncontextmenu="event.preventDefault(); openFieldEditor(this, '${doc.id}', 'governorate', \`${(doc.governorate || '').replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'المحافظة' : 'Governorate'}')" title="${currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit'}">
-                        <div class="flex items-center justify-between gap-3 mb-1">
-                            <div class="flex items-center gap-2">
-                                <div class="text-primary/40 group-hover/field:text-primary transition-colors">${getIcon('map', 'xs')}</div>
-                                <span class="text-[9px] font-black uppercase tracking-widest text-on-surface-variant/40">${currentLang === 'ar' ? 'المحافظة' : 'Governorate'}</span>
-                            </div>
-                        </div>
-                        <p class="field-value text-sm font-bold text-on-surface leading-snug pl-7 flex items-center gap-2">
-                            ${doc.governorate === 'غير_محددة' || doc.governorate === 'غير محددة' ? (currentLang === 'ar' ? 'المحافظة غير محددة' : 'Governorate not defined') : (doc.governorate || '—')}
-                            ${doc.governorate === 'غير_محددة' || doc.governorate === 'غير محددة' ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 opacity-70 font-black uppercase tracking-tighter">${currentLang === 'ar' ? 'تنبيه' : 'Alert'}</span>` : ''}
-                        </p>
-                    </div>
 
                     <!-- التاريخ ورقم المرجع - جنب بعض مع توسع عند الإشارة -->
                     <div class="flex gap-2 date-ref-row">
@@ -2255,9 +2242,6 @@ function selectDocument(id, isSoftUpdate = false) {
 }
 
 
-const egyptGovernorates = [
-    "غير_محددة", "القاهرة", "الجيزة", "الإسكندرية", "الدقهلية", "البحر الأحمر", "البحيرة", "الفيوم", "الغربية", "الإسماعيلية", "المنوفية", "المنيا", "القليوبية", "الوادي الجديد", "الشرقية", "السويس", "أسوان", "أسيوط", "بني سويف", "بورسعيد", "دمياط", "جنوب سيناء", "كفر الشيخ", "مطروح", "الأقصر", "قنا", "شمال سيناء", "سوهاج"
-];
 
 // ============================================================
 // INLINE FIELD EDITOR (Right-click to edit)
@@ -2272,70 +2256,10 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
     if (!valueEl) return;
 
     const isMultiline = ['subject', 'project', 'summary'].includes(fieldKey);
-    const isGovernorate = fieldKey === 'governorate';
     
     let inputEl;
     let customDropdown;
-
-    if (isGovernorate) {
-        const container = document.createElement('div');
-        container.className = 'relative w-full mt-2';
-        
-        inputEl = document.createElement('input');
-        inputEl.type = 'text';
-        inputEl.placeholder = currentLang === 'ar' ? 'ابحث عن محافظة...' : 'Search governorate...';
-        inputEl.className = 'w-full bg-surface-container-highest text-sm font-bold text-on-surface outline-none border border-primary/20 rounded-xl px-3 py-2.5 transition-all focus:border-primary/60';
-        inputEl.value = currentValue || '';
-
-        customDropdown = document.createElement('div');
-        customDropdown.className = 'absolute z-[100] left-0 right-0 mt-2 max-h-60 overflow-y-auto bg-surface-container-highest border border-primary/20 rounded-2xl shadow-2xl shadow-black/40 custom-scrollbar';
-        customDropdown.style.direction = 'ltr'; // Moves scrollbar to the right
-        
-        const renderGovList = (filter = '') => {
-            customDropdown.innerHTML = '';
-            const filtered = egyptGovernorates.filter(g => g.toLowerCase().includes(filter.toLowerCase()));
-            filtered.forEach(gov => {
-                const item = document.createElement('div');
-                item.className = `p-3 text-sm font-bold cursor-pointer transition-all hover:bg-primary hover:text-white flex items-center justify-between group ${gov === currentValue ? 'bg-primary/10 text-primary' : 'text-on-surface'}`;
-                item.style.direction = 'rtl'; // Keep text Arabic direction
-                item.style.textAlign = 'right';
-                item.innerHTML = `<span>${gov}</span> ${gov === currentValue ? `<span class="text-primary group-hover:text-white">${getIcon('check', 'xs')}</span>` : ''}`;
-                item.onclick = (e) => {
-                    e.stopPropagation();
-                    inputEl.value = gov;
-                    customDropdown.classList.add('hidden');
-                };
-                customDropdown.appendChild(item);
-            });
-        };
-
-        inputEl.onfocus = () => {
-            customDropdown.classList.remove('hidden');
-            renderGovList(inputEl.value);
-        };
-        inputEl.oninput = (e) => renderGovList(e.target.value);
-        
-        container.appendChild(inputEl);
-        container.appendChild(customDropdown);
-        inputEl.dropdownContainer = container;
-
-        // Close on click outside
-        setTimeout(() => {
-            const handleGlobalClick = (e) => {
-                // If clicked outside the entire card, cancel edit
-                if (!cardEl.contains(e.target)) {
-                    document.getElementById(`cancel-edit-${fieldKey}`)?.click();
-                    return;
-                }
-                // If clicked outside the dropdown but inside the card, just hide dropdown
-                if (!container.contains(e.target)) {
-                    customDropdown.classList.add('hidden');
-                }
-            };
-            inputEl._globalClickHandler = handleGlobalClick;
-            document.addEventListener('click', handleGlobalClick);
-        }, 10);
-    } else if (fieldKey === 'doc_date') {
+    if (fieldKey === 'doc_date') {
         const dateContainer = document.createElement('div');
         dateContainer.className = 'flex gap-2 mt-2';
         
@@ -2379,19 +2303,19 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
             return sel;
         };
 
-        const years = [];
+        const yearsList = [];
         const currentYear = new Date().getFullYear();
-        for (let i = currentYear + 5; i >= 1950; i--) years.push(i.toString());
+        for (let i = currentYear + 5; i >= 1950; i--) yearsList.push(i.toString());
 
-        const months = [];
-        for (let i = 1; i <= 12; i++) months.push(i.toString().padStart(2, '0'));
+        const monthsList = [];
+        for (let i = 1; i <= 12; i++) monthsList.push(i.toString().padStart(2, '0'));
 
-        const days = [];
-        for (let i = 1; i <= 31; i++) days.push(i.toString().padStart(2, '0'));
+        const daysList = [];
+        for (let i = 1; i <= 31; i++) daysList.push(i.toString().padStart(2, '0'));
 
-        const selY = createSelect(currentLang === 'ar' ? 'السنة' : 'Year', y, years);
-        const selM = createSelect(currentLang === 'ar' ? 'الشهر' : 'Month', m, months);
-        const selD = createSelect(currentLang === 'ar' ? 'اليوم' : 'Day', d, days);
+        const selY = createSelect(currentLang === 'ar' ? 'السنة' : 'Year', y, yearsList);
+        const selM = createSelect(currentLang === 'ar' ? 'الشهر' : 'Month', m, monthsList);
+        const selD = createSelect(currentLang === 'ar' ? 'اليوم' : 'Day', d, daysList);
 
         // Order: Year -> Month -> Day (Standard)
         // In RTL mode, Flexbox handles visual order if we just append
@@ -2422,15 +2346,13 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
     }
 
     // Replace value text with input
-    if (isGovernorate) {
-        valueEl.replaceWith(inputEl.dropdownContainer);
-    } else if (inputEl._isCustom) {
+    if (inputEl._isCustom) {
         valueEl.replaceWith(inputEl.container);
     } else {
         valueEl.replaceWith(inputEl);
     }
     inputEl.focus();
-    if (!isGovernorate) {
+    if (inputEl) {
         // Only call .select() on real input elements (not custom date picker)
         if (typeof inputEl.select === 'function') inputEl.select();
         // Add click-outside listener for regular fields

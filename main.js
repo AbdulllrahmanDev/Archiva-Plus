@@ -68,11 +68,8 @@ const WARED_MAPPING = {
 };
 
 function getProjectFolderName(code, name, mapping) {
-    const occurrences = Object.values(mapping).filter(v => v === name).length;
-    if (occurrences > 1) {
-        return `${name} ${code}`;
-    }
-    return name;
+    // Always use 'Code Name' format
+    return `${code} ${name}`;
 }
 
 function parseArchivaCode(text) {
@@ -755,7 +752,7 @@ ipcMain.handle('get-documents', async () => {
 });
 
 ipcMain.handle('update-document', async (event, id, fields) => {
-    const allowedFields = ['subject', 'project', 'doc_date', 'version_no', 'title', 'summary', 'governorate'];
+    const allowedFields = ['subject', 'project', 'doc_date', 'version_no', 'title', 'summary'];
     const updates = Object.entries(fields).filter(([k]) => allowedFields.includes(k));
     if (updates.length === 0) return { success: false, error: 'No valid fields' };
 
@@ -767,13 +764,13 @@ ipcMain.handle('update-document', async (event, id, fields) => {
             let needsReorganize = false;
             if (fields.subject !== undefined && fields.subject !== doc.subject) needsReorganize = true;
             if (fields.project !== undefined && fields.project !== doc.project) needsReorganize = true;
+            if (fields.version_no !== undefined && fields.version_no !== doc.version_no) needsReorganize = true;
             if (fields.doc_date !== undefined && fields.doc_date !== doc.doc_date) {
                 // Only move the file if the YEAR changes, not just day/month
                 const oldYear = (doc.doc_date || '').split('-')[0];
                 const newYear = (fields.doc_date || '').split('-')[0];
                 if (oldYear !== newYear) needsReorganize = true;
             }
-            if (fields.governorate !== undefined && fields.governorate !== doc.governorate) needsReorganize = true;
             
             const updatedDoc = { ...doc, ...fields, is_manual: 1 };
             
@@ -850,6 +847,7 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
         }
 
         docData.type = docType; // Update type in docData for DB saving
+        docData.project = projectName; // Ensure project name with code is saved to DB
 
         const targetDir = path.join(baseFolder, year, docType, sanitizeFolderName(projectName));
         if (!fs.existsSync(targetDir)) {
@@ -857,7 +855,8 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
         }
         
         let cleanSubject;
-        if (versionNo && yearCode) {
+        if (versionNo) {
+            // Filename is now always the code (version_no)
             cleanSubject = versionNo.replace(/\//g, "-").replace(/\\/g, "-");
         } else {
             const subjectRaw = (docData.subject || "").trim();
@@ -945,9 +944,9 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
             const tagsJson = Array.isArray(docData.tags) ? JSON.stringify(docData.tags) : "[]";
             db.run(
                 `INSERT OR REPLACE INTO documents 
-                (id, file, file_path, title, date_added, type, class, area, tags, summary, content, sha256, status, intel_card, subject, project, doc_date, version_no, governorate, is_manual) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [docData.id, docData.file, docData.file_path, docData.title, docData.date_added, docData.type, docData.class, docData.area, tagsJson, docData.summary, docData.content || "", docData.sha256 || "", 'ready', docData.intel_card || "", docData.subject, docData.project, docData.doc_date, docData.version_no, docData.governorate || "", docData.is_manual || 0],
+                (id, file, file_path, title, date_added, type, class, area, tags, summary, content, sha256, status, intel_card, subject, project, doc_date, version_no, is_manual) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [docData.id, docData.file, docData.file_path, docData.title, docData.date_added, docData.type, docData.class, docData.area, tagsJson, docData.summary, docData.content || "", docData.sha256 || "", 'ready', docData.intel_card || "", docData.subject, docData.project, docData.doc_date, docData.version_no, docData.is_manual || 0],
                 (err) => {
                     sendUpdateToRenderer();
                     if (mainWindow) {

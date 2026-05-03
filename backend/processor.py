@@ -69,11 +69,8 @@ WARED_MAPPING = {
 
 # Identify projects with multiple codes to add the code to the folder name
 def _get_project_folder_name(code, name, mapping):
-    # Count how many times this project name appears in the mapping
-    occurrences = list(mapping.values()).count(name)
-    if occurrences > 1:
-        return f"{name} {code}"
-    return name
+    # Always use 'Code Name' format as requested
+    return f"{code} {name}"
 
 def parse_archiva_code(text):
     """
@@ -418,8 +415,8 @@ def real_ai_analyze(text, filename, file_path=None):
 
             ai_data["type"] = "PDF" if filename.lower().endswith(".pdf") else "IMAGE"
             # Use the AI-extracted class; fall back to 'أخرى' if not provided
+            # Removed area/governorate as requested
             ai_data.setdefault("class", "أخرى")
-            ai_data.setdefault("area", "غير محدد")
             ai_data.setdefault("tags", [])
 
             # --- Post-processing: Strip field labels if AI included them in values ---
@@ -833,15 +830,17 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
         if project_name == "عام" and doc_data.get("project") not in ("", "عام", "غير محدد", "غير_محدد"):
             project_name = doc_data.get("project")
 
+        doc_data["project"] = project_name # Ensure project name with code is saved to DB
+
         # ── 3. بناء مسار المجلد الهدف ──────────────────────────────────────
         # الهيكل المطلوب: السنة / [صادر أو وارد] / اسم المشروع
         target_dir = os.path.join(base_archive_path, year, doc_type, sanitize_folder_name(project_name))
         os.makedirs(target_dir, exist_ok=True)
 
         # ── 4. تحديد اسم الملف النهائي ────────────────────────────────────
-        # اسم الملف يكون هو الكود بالكامل إذا وجد، وإلا نستخدم الموضوع
-        if version_no and year_code:
-            # تنظيف الكود ليكون اسم ملف صالح (تحويل / إلى -)
+        # اسم الملف يكون هو الكود بالكامل (version_no) إذا وجد، وإلا الموضوع
+        if version_no:
+            # تنظيف الكود ليكون اسم ملف صالح (تحويل / و \ إلى -)
             clean_filename = version_no.replace("/", "-").replace("\\", "-")
         else:
             subject_raw = (doc_data.get("subject") or "").strip()
@@ -852,8 +851,8 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
         
         clean_filename = sanitize_folder_name(clean_filename)
         ext = os.path.splitext(doc_data.get("file", ".pdf"))[1] or ".pdf"
-        
         new_filename = f"{clean_filename}{ext}"
+
         target_file_path = os.path.join(target_dir, new_filename)
 
         # ── 5. معالجة تعارض الأسماء ────────────────────────────────────────
