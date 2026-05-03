@@ -11,7 +11,7 @@
   },
   "build": {
     "appId": "com.archiva.app",
-    "productName": "Archiva",
+    "productName": "Archiva Plus",
     "directories": {
       "output": "dist"
     },
@@ -30,7 +30,7 @@
       "icon": ".icon-ico/icon.ico"
     },
     "portable": {
-      "splashImage": "logo/splash.bmp"
+      "splashImage": "logo/Archiva-plus.bmp"
     },
     "nsis": {
       "oneClick": true,

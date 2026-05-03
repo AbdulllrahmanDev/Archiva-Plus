@@ -1592,7 +1592,18 @@ function writeSentinelFiles(enabled, activatedAt, splitEnabled, smartMatchEnable
     const smartFile    = path.join(sentinelDir, 'smart_project_matching');
 
     try {
-        if (!fs.existsSync(sentinelDir)) fs.mkdirSync(sentinelDir);
+        if (!fs.existsSync(sentinelDir)) {
+            fs.mkdirSync(sentinelDir);
+            // Hide the folder on Windows immediately after creation
+            if (process.platform === 'win32') {
+                try { require('child_process').exec(`attrib +h "${sentinelDir}"`, () => {}); } catch(e) {}
+            }
+        }
+        
+        // Ensure it stays hidden even if it already existed
+        if (process.platform === 'win32') {
+            try { require('child_process').exec(`attrib +h "${sentinelDir}"`, () => {}); } catch(e) {}
+        }
 
         if (enabled) {
             fs.writeFileSync(enabledFile, '1', 'utf8');

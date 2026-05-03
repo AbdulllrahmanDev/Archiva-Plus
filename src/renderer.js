@@ -122,7 +122,7 @@ const i18n = {
         enter_term: "Enter a term to begin", analyzed: "Analyzed", system_idle: "System Idle",
         archiving_msg: "Archiving {count} documents...", staged_msg: "Files staged. Processing in background...", exported_msg: "Exported successfully",
         archive_empty: "Archive is empty.", asset_intel: "Asset Intelligence", archived: "Archived",
-        ai_engine: "Intelligence Engine", ai_status: "Systems Operational", ai_desc: "Archiva AI is scanning your documents for deep pattern recognition.",
+        ai_engine: "Intelligence Engine", ai_status: "Systems Operational", ai_desc: "Archiva Plus AI is scanning your documents for deep pattern recognition.",
         archived_title: "Archive",
         ai_welcome: "Hello. I am the Archiva Intelligence Engine. I can analyze your documents, extract insights, and answer questions. Upload an image or type a message to begin.",
         chat_placeholder: "Ask anything or attach a document...",
@@ -224,7 +224,7 @@ const i18n = {
         enter_term: "أدخل كلمة للبحث", analyzed: "تم التحليل", system_idle: "نظام مستعد",
         archiving_msg: "أرشفة {count} مستندات...", staged_msg: "تم الإرسال.", exported_msg: "تم التصدير بنجاح",
         archive_empty: "الأرشيف فارغ.", asset_intel: "الملفات المؤرشفة", archived: "تمت الأرشفة",
-        ai_engine: "محرك الذكاء", ai_status: "الأنظمة تعمل", ai_desc: "يقوم نظام Archiva AI بفحص مستنداتك للتعرف على الأنماط العميقة.",
+        ai_engine: "محرك الذكاء", ai_status: "الأنظمة تعمل", ai_desc: "يقوم نظام Archiva Plus AI بفحص مستنداتك للتعرف على الأنماط العميقة.",
         archived_title: "مؤرشف",
         ai_welcome: "مرحباً. أنا محرك الذكاء الخاص بـ Archiva. يمكنني تحليل مستنداتك واستخراج الرؤى والإجابة على أسئلتك. أرفق صورة أو اكتب رسالة للبدء.",
         chat_placeholder: "اسأل عن أي شيء أو أرفق مستنداً...",
@@ -569,7 +569,7 @@ const getViews = () => ({
             <div id="chat-scroll-area" class="flex-1 overflow-y-auto w-full scroll-smooth px-4">
                 <!-- Welcome Screen -->
                 <div id="ai-welcome-screen" class="w-full h-full flex flex-col items-center justify-center p-6 text-center space-y-6">
-                    <img src="../logo/Archiva.svg" class="w-16 h-16 object-contain opacity-20 mb-2">
+                    <img src="../logo/Archiva Plus.png" class="w-16 h-16 object-contain opacity-20 mb-2">
                     <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-on-surface/80 text-balance">${t('ai_welcome_title')}</h1>
                 </div>
 
@@ -591,7 +591,7 @@ const getViews = () => ({
                         </button>
 
                         <div class="flex items-center gap-4">
-                             <span class="text-[9px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/40">Archiva Ai 2.5</span>
+                             <span class="text-[9px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/40">Archiva Plus Ai 2.5</span>
                              <button id="new-chat-btn" class="p-2 bg-primary text-white rounded-xl shadow-md hover:shadow-lg hover:scale-105 transition-all flex items-center justify-center" title="${t('new_chat')}" type="button">
                                 ${getIcon('edit_square', 'sm')}
                              </button>
@@ -1073,9 +1073,9 @@ function appendMessageToUI(role, text, attachments = null, id = null) {
                 <div class="flex items-center gap-2.5 mb-2 group ${isRtl ? 'flex-row-reverse' : 'flex-row'}">
                     <div class="relative w-6 h-6 rounded-full bg-surface-container flex items-center justify-center flex-shrink-0 border border-outline-variant/10 overflow-hidden shadow-sm">
                         ${isLoading ? `<div class="absolute inset-0 rounded-full border-[1.5px] border-primary/20 border-t-primary animate-spin"></div>` : ''}
-                        <img src="../logo/Archiva.svg" class="w-4 h-4 object-contain" alt="Archiva AI">
+                        <img src="../logo/Archiva Plus.png" class="w-4 h-4 object-contain" alt="Archiva AI">
                     </div>
-                    <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/50">Archiva AI</span>
+                    <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/50">Archiva Plus AI</span>
                 </div>
                 <div class="text-on-surface px-0 py-0 text-[1.05rem] leading-relaxed break-words font-medium">
                     ${contentHtml}
@@ -3297,7 +3297,7 @@ async function syncUpdateStatus(silent = true) {
                     <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
                 </div>
                 <div class="flex items-center gap-1 font-bold" dir="ltr">
-                    <span class="text-[9px] tracking-[0.2em]">Archiva</span>
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
                     <span class="font-mono text-[10px]">${comparison}</span>
                 </div>
                 <div class="flex justify-center mt-1">
