@@ -312,7 +312,17 @@ const i18n = {
         wrong_password: "Incorrect Password",
         open_in_system: "Open in System",
         access_granted: "Access Granted: Premium features unlocked.",
-        access_denied: "Access Denied: Incorrect password."
+        access_denied: "Access Denied: Incorrect password.",
+        manager_tab_title: "Add New Project",
+        manager_tab_desc: "Enter details for the new project to add it to the system list",
+        new_project_type_label: "Project Type",
+        new_project_code_label: "Project Code (e.g., 103)",
+        new_project_name_label: "Project Name",
+        new_project_code_placeholder: "Enter code...",
+        new_project_name_placeholder: "Enter name...",
+        add_project_btn_text: "Add Project",
+        type_sader: "Outgoing",
+        type_wared: "Incoming"
     },
     ar: {
         nav_add: "إضافة ملف", nav_library: "الأرشيف", nav_ai: "ذكاء اصطناعي",
@@ -415,7 +425,17 @@ const i18n = {
         wrong_password: "كلمة السر خاطئة",
         open_in_system: "فتح في النظام",
         access_granted: "تم السماح بالوصول: تم فتح الميزات الخاصة.",
-        access_denied: "تم رفض الوصول: كلمة السر غير صحيحة."
+        access_denied: "تم رفض الوصول: كلمة السر غير صحيحة.",
+        manager_tab_title: "إضافة مشروع جديد",
+        manager_tab_desc: "أدخل تفاصيل المشروع الجديد لإضافته إلى القائمة المنسدلة في النظام",
+        new_project_type_label: "نوع المشروع",
+        new_project_code_label: "كود المشروع (مثال: 103)",
+        new_project_name_label: "اسم المشروع",
+        new_project_code_placeholder: "أدخل الكود...",
+        new_project_name_placeholder: "أدخل الاسم...",
+        add_project_btn_text: "إضافة المشروع",
+        type_sader: "صادر",
+        type_wared: "وارد"
     }
 };
 
@@ -482,8 +502,37 @@ function updateSettingsUI() {
     const stopLabel = document.getElementById('stop-label');
     if (stopLabel) stopLabel.innerText = t('stop_label');
 
+    // Manager Tab Translations
+    const managerTabTitle = document.getElementById('manager-tab-title');
+    const managerTabDesc = document.getElementById('manager-tab-desc');
+    const projectTypeLabel = document.getElementById('new-project-type-label');
+    const projectCodeLabel = document.getElementById('new-project-code-label');
+    const projectNameLabel = document.getElementById('new-project-name-label');
+    const projectBtnText = document.getElementById('add-project-btn-text');
+    
+    if (managerTabTitle) managerTabTitle.innerText = t('manager_tab_title');
+    if (managerTabDesc) managerTabDesc.innerText = t('manager_tab_desc');
+    if (projectTypeLabel) projectTypeLabel.innerText = t('new_project_type_label');
+    if (projectCodeLabel) projectCodeLabel.innerText = t('new_project_code_label');
+    if (projectNameLabel) projectNameLabel.innerText = t('new_project_name_label');
+    if (projectBtnText) projectBtnText.innerText = t('add_project_btn_text');
+
+    const projectCodeInput = document.getElementById('new-project-code');
+    const projectNameInput = document.getElementById('new-project-name');
+    if (projectCodeInput) projectCodeInput.placeholder = t('new_project_code_placeholder');
+    if (projectNameInput) projectNameInput.placeholder = t('new_project_name_placeholder');
+
+    const projectTypeSelect = document.getElementById('new-project-type');
+    if (projectTypeSelect && projectTypeSelect.options.length >= 2) {
+        projectTypeSelect.options[0].text = t('type_sader');
+        projectTypeSelect.options[1].text = t('type_wared');
+    }
+
     // Re-render the version footer properly to update the translation badge
-    if (typeof syncUpdateStatus === 'function') {
+    // Only sync update status if not during initial layout to avoid redundant startup checks
+    if (!viewsInitialized && typeof syncUpdateStatus === 'function') {
+        // Skip
+    } else if (typeof syncUpdateStatus === 'function') {
         syncUpdateStatus(true);
     }
 
@@ -740,7 +789,7 @@ function getIconForType(type) {
 }
 
 function updateLayoutDirection() {
-    document.documentElement.dir = 'ltr';
+    document.documentElement.dir = (currentLang === 'ar') ? 'rtl' : 'ltr';
     document.documentElement.lang = currentLang;
     document.body.dir = (currentLang === 'ar') ? 'rtl' : 'ltr';
     document.body.classList.toggle('rtl-mode', currentLang === 'ar');
@@ -3549,8 +3598,10 @@ if (window.api && window.api.onUpdateAvailable) {
             showUpdateModal(
                 t('update_title'), 
                 t('update_available_msg'), 
-                () => {}, 
-                true
+                () => {
+                    // Start download if not already started
+                }, 
+                false // Show prompt first, not progress
             );
         }
     });
@@ -3561,8 +3612,10 @@ if (window.api && window.api.onUpdateAvailable) {
             const percent = document.getElementById('update-progress-percent');
             const label = document.getElementById('update-progress-label');
             const progressContainer = document.getElementById('update-progress-container');
+            const actions = document.getElementById('update-modal-actions');
             
             if (progressContainer) progressContainer.classList.remove('hidden');
+            if (actions) actions.classList.add('hidden'); // Hide buttons once progress starts
             if (bar) bar.style.width = `${progress.percent}%`;
             if (percent) percent.innerText = `${Math.round(progress.percent)}%`;
             if (label) label.innerText = t('downloading');
@@ -3587,6 +3640,14 @@ const DEFAULT_RELEASE_NOTES = [
     "واضافة العديد من المزايا بنفس الوقت"
 ];
 
+// Cached update state - set by the autoUpdater event from main.js
+let cachedUpdateInfo = null;
+
+window.api.onUpdateAvailable?.((info) => {
+    cachedUpdateInfo = info;
+    renderUpdateStatus(true, info.version);
+});
+
 async function syncUpdateStatus(silent = true) {
     const btn = document.getElementById('manual-update-btn');
     const versionText = document.getElementById('update-version-text');
@@ -3594,45 +3655,60 @@ async function syncUpdateStatus(silent = true) {
 
     try {
         const currentVersion = await window.api.getAppVersion();
-        const result = await window.api.checkForUpdatesManual();
-
-        if (result.success && result.updateInfo && result.updateInfo.version !== currentVersion) {
-            btn.classList.add('text-primary/80');
-            btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
-            
-            const comparison = t('version_comparison', { current: currentVersion, new: result.updateInfo.version });
-            versionText.innerHTML = `
-                <div id="update-badge-container" class="mb-1">
-                    <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
-                </div>
-                <div class="flex items-center gap-1 font-bold" dir="ltr">
-                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
-                    <span class="font-mono text-[10px]">${comparison}</span>
-                </div>
-                <div class="flex justify-center mt-1">
-                    <div id="update-indicator-dot" class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-sm"></div>
-                </div>
-            `;
-            btn.disabled = false;
+        
+        if (cachedUpdateInfo && cachedUpdateInfo.version !== currentVersion) {
+            renderUpdateStatus(true, cachedUpdateInfo.version, currentVersion);
         } else {
-            btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
-            btn.classList.remove('text-primary/80');
-            
-            versionText.innerHTML = `
-                <div id="update-badge-container" class="mb-1">
-                    <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
-                </div>
-                <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
-                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
-                    <span class="font-mono text-[10px]">v${currentVersion}</span>
-                </div>
-            `;
-            btn.disabled = true;
+            renderUpdateStatus(false, currentVersion);
         }
     } catch (e) {
         if (!silent) showToast('status_fail');
     }
 }
+
+function renderUpdateStatus(hasUpdate, newVersion, currentVersion) {
+    const btn = document.getElementById('manual-update-btn');
+    const versionText = document.getElementById('update-version-text');
+    if (!btn || !versionText) return;
+
+    if (hasUpdate) {
+        btn.classList.add('text-primary/80');
+        btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+        const comparison = t('version_comparison', { current: currentVersion || '', new: newVersion });
+        versionText.innerHTML = `
+            <div id="update-badge-container" class="mb-1">
+                <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
+            </div>
+            <div class="flex items-center gap-1 font-bold" dir="ltr">
+                <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                <span class="font-mono text-[10px]">${comparison}</span>
+            </div>
+            <div class="flex justify-center mt-1">
+                <div id="update-indicator-dot" class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-sm"></div>
+            </div>
+        `;
+        btn.disabled = false;
+    } else {
+        btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+        btn.classList.remove('text-primary/80');
+        versionText.innerHTML = `
+            <div id="update-badge-container" class="mb-1">
+                <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
+            </div>
+            <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
+                <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                <span class="font-mono text-[10px]">v${newVersion}</span>
+            </div>
+        `;
+        btn.disabled = true;
+    }
+}
+
+// Initial display on load (no network call - just show current version)
+setTimeout(async () => {
+    const currentVersion = await window.api.getAppVersion().catch(() => '?');
+    renderUpdateStatus(false, currentVersion);
+}, 500);
 
 async function handleManualUpdateCheck() {
     const btn = document.getElementById('manual-update-btn');
@@ -3655,11 +3731,7 @@ async function handleManualUpdateCheck() {
 }
 
 // Initial check on load
-setTimeout(() => syncUpdateStatus(true), 2000);
-// Also re-check when settings opens
-document.getElementById('settings-open-btn')?.addEventListener('click', () => {
-    syncUpdateStatus(true);
-});
+// Initial check only happens when main.js fires update_available event
 
 
 // ============================================================
@@ -3881,7 +3953,9 @@ function initSettingsTabs() {
     if (!tabGenBtn || !tabManBtn || !genContent || !manContent) return;
 
     tabGenBtn.onclick = () => {
+        tabGenBtn.classList.add('active');
         tabGenBtn.classList.replace('text-on-surface-variant', 'text-primary');
+        tabManBtn.classList.remove('active');
         tabManBtn.classList.replace('text-primary', 'text-on-surface-variant');
         if (tabIndicator) {
             tabIndicator.style.transform = 'translateX(100%)';
@@ -3908,7 +3982,9 @@ function initSettingsTabs() {
         managerSessionUnlocked = true; // Upgrade to persistent session
         aiUnlocked = true; // Also unlock AI features globally for the session
 
+        tabManBtn.classList.add('active');
         tabManBtn.classList.replace('text-on-surface-variant', 'text-primary');
+        tabGenBtn.classList.remove('active');
         tabGenBtn.classList.replace('text-primary', 'text-on-surface-variant');
         if (tabIndicator) {
             tabIndicator.style.transform = 'translateX(0)';

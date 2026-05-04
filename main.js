@@ -67,6 +67,35 @@ let WARED_MAPPING = {
     "512": "مشروعات وجه بحري",
 };
 
+const mappingsPath = path.join(app.getPath('userData'), 'mappings.json');
+
+function loadMappings() {
+    if (fs.existsSync(mappingsPath)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+            if (data.sader) SADER_MAPPING = { ...SADER_MAPPING, ...data.sader };
+            if (data.wared) WARED_MAPPING = { ...WARED_MAPPING, ...data.wared };
+            console.log("Custom mappings loaded successfully");
+        } catch (e) {
+            console.error("Error loading mappings.json:", e);
+        }
+    }
+}
+
+function saveMappings() {
+    try {
+        fs.writeFileSync(mappingsPath, JSON.stringify({
+            sader: SADER_MAPPING,
+            wared: WARED_MAPPING
+        }, null, 4));
+    } catch (e) {
+        console.error("Error saving mappings.json:", e);
+    }
+}
+
+// Initial load
+loadMappings();
+
 function getProjectFolderName(code, name, mapping) {
     if (!name || name === "غير_محدد" || name === "عام") return name;
     
@@ -795,6 +824,25 @@ ipcMain.handle('get-mappings', () => {
         sader: SADER_MAPPING,
         wared: WARED_MAPPING
     };
+});
+
+ipcMain.handle('add-project-mapping', async (event, type, code, name) => {
+    try {
+        // Map types from UI (which might be Arabic or internal keys)
+        const mappingType = (type === 'صادر' || type === 'Sader' || type === 'Outgoing') ? 'Sader' : 'Wared';
+        
+        if (mappingType === 'Sader') {
+            SADER_MAPPING[code] = name;
+        } else {
+            WARED_MAPPING[code] = name;
+        }
+        
+        saveMappings();
+        return true;
+    } catch (e) {
+        console.error("Add mapping error:", e);
+        return false;
+    }
 });
 
 ipcMain.handle('update-document', async (event, id, fields) => {
@@ -1676,34 +1724,55 @@ function writeSentinelFiles(enabled, activatedAt, splitEnabled, smartMatchEnable
 // AUTO-UPDATE SYSTEM
 // ============================================================
 
+let _updateAvailableNotified = false; // Prevent repeated update-available events
+let _updateDownloaded = false;        // Track if download is complete
+let _updateCheckIntervalId = null;    // Store interval ID to allow clearing
+
+// Register event listeners ONCE at module level (not inside the function)
+// to prevent stacking duplicate listeners on each call.
+autoUpdater.on('update-available', (info) => {
+    if (_updateAvailableNotified) return; // Already notified this session
+    _updateAvailableNotified = true;
+    console.log('Update available:', info.version);
+    if (mainWindow) mainWindow.webContents.send('update_available', info);
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+    if (mainWindow) mainWindow.webContents.send('update_progress', progressObj);
+});
+
+autoUpdater.on('update-not-available', () => {
+    console.log('Update not available. App is up to date.');
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+    _updateDownloaded = true;
+    // Stop the interval — no need to keep checking once download is ready
+    if (_updateCheckIntervalId) {
+        clearInterval(_updateCheckIntervalId);
+        _updateCheckIntervalId = null;
+    }
+    if (mainWindow) mainWindow.webContents.send('update_downloaded', info);
+});
+
+autoUpdater.on('error', (err) => {
+    console.error('Auto-Updater Error:', err.message);
+});
+
 function setupAutoUpdater() {
-    // Check for updates every 1 hour
-    setInterval(() => {
-        autoUpdater.checkForUpdates();
+    if (_updateDownloaded) return; // Already downloaded, no need to check again
+
+    // Do the initial check after a short delay to not block startup
+    setTimeout(() => {
+        autoUpdater.checkForUpdates().catch(e => console.log('Update check skipped:', e.message));
+    }, 3000);
+
+    // Check for updates every hour (only if update not yet downloaded)
+    _updateCheckIntervalId = setInterval(() => {
+        if (!_updateDownloaded) {
+            autoUpdater.checkForUpdates().catch(e => console.log('Interval update check skipped:', e.message));
+        }
     }, 60 * 60 * 1000);
-
-    // Immediate check on startup
-    autoUpdater.checkForUpdatesAndNotify();
-
-    autoUpdater.on('update-available', (info) => {
-        if (mainWindow) mainWindow.webContents.send('update_available', info);
-    });
-
-    autoUpdater.on('download-progress', (progressObj) => {
-        if (mainWindow) mainWindow.webContents.send('update_progress', progressObj);
-    });
-
-    autoUpdater.on('update-not-available', () => {
-        console.log('Update not available.');
-    });
-
-    autoUpdater.on('update-downloaded', (info) => {
-        if (mainWindow) mainWindow.webContents.send('update_downloaded', info);
-    });
-
-    autoUpdater.on('error', (err) => {
-        console.error('Update Error:', err);
-    });
 }
 
 ipcMain.on('restart_app', () => {
@@ -1746,5 +1815,4 @@ ipcMain.handle('lock-features', () => {
 // Initialize on app start
 app.whenReady().then(() => {
     setupAppMenu();
-    setupAutoUpdater();
 });

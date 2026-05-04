@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('api', {
     stopProcessing: (id) => ipcRenderer.invoke('stop-processing', id),
     setNativeTheme: (theme) => ipcRenderer.send('set-native-theme', theme),
     getMappings: () => ipcRenderer.invoke('get-mappings'),
+    addProjectMapping: (type, code, name) => ipcRenderer.invoke('add-project-mapping', type, code, name),
 
 
     // Auto-Analysis Toggle
