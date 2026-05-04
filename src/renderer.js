@@ -529,10 +529,7 @@ function updateSettingsUI() {
     }
 
     // Re-render the version footer properly to update the translation badge
-    // Only sync update status if not during initial layout to avoid redundant startup checks
-    if (!viewsInitialized && typeof syncUpdateStatus === 'function') {
-        // Skip
-    } else if (typeof syncUpdateStatus === 'function') {
+    if (typeof syncUpdateStatus === 'function') {
         syncUpdateStatus(true);
     }
 
@@ -3612,10 +3609,8 @@ if (window.api && window.api.onUpdateAvailable) {
             const percent = document.getElementById('update-progress-percent');
             const label = document.getElementById('update-progress-label');
             const progressContainer = document.getElementById('update-progress-container');
-            const actions = document.getElementById('update-modal-actions');
             
             if (progressContainer) progressContainer.classList.remove('hidden');
-            if (actions) actions.classList.add('hidden'); // Hide buttons once progress starts
             if (bar) bar.style.width = `${progress.percent}%`;
             if (percent) percent.innerText = `${Math.round(progress.percent)}%`;
             if (label) label.innerText = t('downloading');
@@ -3640,14 +3635,6 @@ const DEFAULT_RELEASE_NOTES = [
     "واضافة العديد من المزايا بنفس الوقت"
 ];
 
-// Cached update state - set by the autoUpdater event from main.js
-let cachedUpdateInfo = null;
-
-window.api.onUpdateAvailable?.((info) => {
-    cachedUpdateInfo = info;
-    renderUpdateStatus(true, info.version);
-});
-
 async function syncUpdateStatus(silent = true) {
     const btn = document.getElementById('manual-update-btn');
     const versionText = document.getElementById('update-version-text');
@@ -3655,60 +3642,45 @@ async function syncUpdateStatus(silent = true) {
 
     try {
         const currentVersion = await window.api.getAppVersion();
-        
-        if (cachedUpdateInfo && cachedUpdateInfo.version !== currentVersion) {
-            renderUpdateStatus(true, cachedUpdateInfo.version, currentVersion);
+        const result = await window.api.checkForUpdatesManual();
+
+        if (result.success && result.updateInfo && result.updateInfo.version !== currentVersion) {
+            btn.classList.add('text-primary/80');
+            btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+            
+            const comparison = t('version_comparison', { current: currentVersion, new: result.updateInfo.version });
+            versionText.innerHTML = `
+                <div id="update-badge-container" class="mb-1">
+                    <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
+                </div>
+                <div class="flex items-center gap-1 font-bold" dir="ltr">
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                    <span class="font-mono text-[10px]">${comparison}</span>
+                </div>
+                <div class="flex justify-center mt-1">
+                    <div id="update-indicator-dot" class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-sm"></div>
+                </div>
+            `;
+            btn.disabled = false;
         } else {
-            renderUpdateStatus(false, currentVersion);
+            btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+            btn.classList.remove('text-primary/80');
+            
+            versionText.innerHTML = `
+                <div id="update-badge-container" class="mb-1">
+                    <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
+                </div>
+                <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                    <span class="font-mono text-[10px]">v${currentVersion}</span>
+                </div>
+            `;
+            btn.disabled = true;
         }
     } catch (e) {
         if (!silent) showToast('status_fail');
     }
 }
-
-function renderUpdateStatus(hasUpdate, newVersion, currentVersion) {
-    const btn = document.getElementById('manual-update-btn');
-    const versionText = document.getElementById('update-version-text');
-    if (!btn || !versionText) return;
-
-    if (hasUpdate) {
-        btn.classList.add('text-primary/80');
-        btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
-        const comparison = t('version_comparison', { current: currentVersion || '', new: newVersion });
-        versionText.innerHTML = `
-            <div id="update-badge-container" class="mb-1">
-                <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
-            </div>
-            <div class="flex items-center gap-1 font-bold" dir="ltr">
-                <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
-                <span class="font-mono text-[10px]">${comparison}</span>
-            </div>
-            <div class="flex justify-center mt-1">
-                <div id="update-indicator-dot" class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-sm"></div>
-            </div>
-        `;
-        btn.disabled = false;
-    } else {
-        btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
-        btn.classList.remove('text-primary/80');
-        versionText.innerHTML = `
-            <div id="update-badge-container" class="mb-1">
-                <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
-            </div>
-            <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
-                <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
-                <span class="font-mono text-[10px]">v${newVersion}</span>
-            </div>
-        `;
-        btn.disabled = true;
-    }
-}
-
-// Initial display on load (no network call - just show current version)
-setTimeout(async () => {
-    const currentVersion = await window.api.getAppVersion().catch(() => '?');
-    renderUpdateStatus(false, currentVersion);
-}, 500);
 
 async function handleManualUpdateCheck() {
     const btn = document.getElementById('manual-update-btn');
@@ -3731,7 +3703,12 @@ async function handleManualUpdateCheck() {
 }
 
 // Initial check on load
-// Initial check only happens when main.js fires update_available event
+// setTimeout(() => syncUpdateStatus(true), 2000); // Removed redundant check, handled by main.js
+
+// Also re-check when settings opens
+document.getElementById('settings-open-btn')?.addEventListener('click', () => {
+    syncUpdateStatus(true);
+});
 
 
 // ============================================================
