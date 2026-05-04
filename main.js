@@ -173,13 +173,13 @@ function setupAppMenu() {
         {
             label: 'Edit',
             submenu: [
-                { role: 'undo', label: 'تراجع', accelerator: 'CmdOrCtrl+Z' },
+                { role: 'undo', label: 'تراجع' },
                 { role: 'redo', label: 'إعادة', accelerator: 'CmdOrCtrl+Y' },
                 { type: 'separator' },
                 { role: 'cut', label: 'قص', accelerator: 'CmdOrCtrl+X' },
                 { role: 'copy', label: 'نسخ', accelerator: 'CmdOrCtrl+C' },
                 { role: 'paste', label: 'لصق', accelerator: 'CmdOrCtrl+V' },
-                { role: 'selectall', label: 'تحديد الكل', accelerator: 'CmdOrCtrl+A' }
+                { role: 'selectall', label: 'تحديد الكل' }
             ]
         },
         {

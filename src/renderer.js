@@ -2805,7 +2805,22 @@ window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, 
 
         try {
             // Record history before update
-            pushToHistory({ id: docId, field: fieldKey, oldValue: currentValue });
+            const doc = documents.find(d => d.id == docId);
+            if (fieldKey === 'project' && doc) {
+                // For project changes, record all related fields to allow full undo
+                pushToHistory({ 
+                    id: docId, 
+                    field: 'project', 
+                    oldValue: currentValue,
+                    oldData: { 
+                        project: doc.project, 
+                        type: doc.type, 
+                        version_no: doc.version_no 
+                    }
+                });
+            } else {
+                pushToHistory({ id: docId, field: fieldKey, oldValue: currentValue });
+            }
             
             const result = await window.api.updateDocument(docId, updatePayload);
             if (result.success) {
@@ -3823,11 +3838,16 @@ async function undoAction() {
 
     const lastAction = historyStack.pop();
     try {
-        const result = await window.api.updateDocument(lastAction.id, { [lastAction.field]: lastAction.oldValue });
+        const payload = lastAction.oldData || { [lastAction.field]: lastAction.oldValue };
+        const result = await window.api.updateDocument(lastAction.id, payload);
         if (result.success) {
             const docIndex = documents.findIndex(d => d.id == lastAction.id);
             if (docIndex !== -1) {
-                documents[docIndex][lastAction.field] = lastAction.oldValue;
+                if (lastAction.oldData) {
+                    Object.assign(documents[docIndex], lastAction.oldData);
+                } else {
+                    documents[docIndex][lastAction.field] = lastAction.oldValue;
+                }
             }
             renderArchiveView(document.getElementById('global-search-input')?.value || '');
             if (activeDocId == lastAction.id) {
@@ -3855,14 +3875,17 @@ document.addEventListener('keydown', (e) => {
     }
 
     const key = e.key.toLowerCase();
-    if (e.ctrlKey && key === 'a') {
+    const isZ = key === 'z' || e.code === 'KeyZ';
+    const isA = key === 'a' || e.code === 'KeyA';
+
+    if (e.ctrlKey && isA) {
         if (currentView === 'archive') {
             e.preventDefault();
             selectAllDocuments();
         }
     }
 
-    if (e.ctrlKey && key === 'z') {
+    if (e.ctrlKey && isZ) {
         e.preventDefault();
         undoAction();
     }
