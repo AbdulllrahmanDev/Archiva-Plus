@@ -482,9 +482,9 @@ function updateSettingsUI() {
     const stopLabel = document.getElementById('stop-label');
     if (stopLabel) stopLabel.innerText = t('stop_label');
 
-    const manualUpdateBtnText = document.getElementById('update-version-text');
-    if (manualUpdateBtnText && !manualUpdateBtnText.innerText.includes('v')) {
-        manualUpdateBtnText.innerText = t('latest_status');
+    // Re-render the version footer properly to update the translation badge
+    if (typeof syncUpdateStatus === 'function') {
+        syncUpdateStatus(true);
     }
 
     refreshStorageDisplay();
