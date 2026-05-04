@@ -1449,10 +1449,9 @@ html[dir="rtl"] select,
 html[dir="rtl"] select.appearance-none,
 .rtl-mode select,
 .rtl-mode select.appearance-none {
-    background-position: left 0.85rem center !important;
-    padding-right: 1rem !important;
-    padding-left: 2.5rem !important;
-    background-origin: content-box;
+    background-position: left 0.5rem center !important;
+    padding-right: 0.75rem !important;
+    padding-left: 1.5rem !important;
 }
 
 /* Ensure text is aligned correctly when not forced */

@@ -118,25 +118,25 @@ function parseArchivaCode(text) {
     const cleanText = text.replace(/\s+/g, '');
     
     // Pattern 1: YYYY/CCC/NNN
-    let match = cleanText.match(/(\d{4})[/\-\.](\d{3})[/\-\.](\d+)/);
+    let match = cleanText.match(/(\d{4})[/\-\.](\d+)[/\-\.](\d+)/);
     if (match) {
         return { year: match[1], projectCode: match[2], docNum: match[3] };
     }
     
     // Pattern 2: CCC/YYYY/NNN
-    match = cleanText.match(/(\d{3})[/\-\.](\d{4})[/\-\.](\d+)/);
+    match = cleanText.match(/(\d+)[/\-\.](\d{4})[/\-\.](\d+)/);
     if (match) {
         return { year: match[2], projectCode: match[1], docNum: match[3] };
     }
 
     // Pattern 3: Simple CCC/YYYY
-    match = cleanText.match(/(\d{3})[/\-\.](\d{4})/);
+    match = cleanText.match(/(\d+)[/\-\.](\d{4})/);
     if (match) {
         return { year: match[2], projectCode: match[1], docNum: null };
     }
 
     // Pattern 4: Simple YYYY/CCC
-    match = cleanText.match(/(\d{4})[/\-\.](\d{3})/);
+    match = cleanText.match(/(\d{4})[/\-\.](\d+)/);
     if (match) {
         return { year: match[1], projectCode: match[2], docNum: null };
     }
@@ -845,6 +845,21 @@ ipcMain.handle('add-project-mapping', async (event, type, code, name) => {
     }
 });
 
+ipcMain.handle('delete-project-mapping', async (event, type, code) => {
+    try {
+        if (type.toLowerCase() === 'sader') {
+            delete SADER_MAPPING[code];
+        } else {
+            delete WARED_MAPPING[code];
+        }
+        saveMappings();
+        return true;
+    } catch (e) {
+        console.error("Delete mapping error:", e);
+        return false;
+    }
+});
+
 ipcMain.handle('update-document', async (event, id, fields) => {
     const allowedFields = ['subject', 'project', 'doc_date', 'version_no', 'title', 'summary', 'type'];
     const updates = Object.entries(fields).filter(([k]) => allowedFields.includes(k));
@@ -1068,7 +1083,7 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
         sidecarData.content_preview = docData.content ? docData.content.substring(0, 500) : "";
         
         if (process.platform === 'win32' && fs.existsSync(sidecarPath)) {
-            try { require('child_process').execSync(`attrib -h "${sidecarPath}"`); } catch(e) {}
+            try { require('child_process').execSync(`attrib -r -h "${sidecarPath}"`); } catch(e) {}
         }
         fs.writeFileSync(sidecarPath, JSON.stringify(sidecarData, null, 2), 'utf8');
         if (process.platform === 'win32') {

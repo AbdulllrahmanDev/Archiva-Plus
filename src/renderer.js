@@ -2749,10 +2749,10 @@ window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, 
             const doc = documents.find(d => d.id == docId);
             let vNo = doc.version_no || '';
             if (vNo && vNo !== 'غير محدد') {
-                const re1 = /^(\d{4})([/\-\._])(\d{3})([/\-\._])(\d+)$/;
-                const re2 = /^(\d{3})([/\-\._])(\d{4})([/\-\._])(\d+)$/;
-                const re3 = /^(\d{4})([/\-\._])(\d{3})$/;
-                const re4 = /^(\d{3})([/\-\._])(\d{4})$/;
+                const re1 = /^(\d{4})([/\-\._])(\d+)([/\-\._])(\d+)$/;
+                const re2 = /^(\d+)([/\-\._])(\d{4})([/\-\._])(\d+)$/;
+                const re3 = /^(\d{4})([/\-\._])(\d+)$/;
+                const re4 = /^(\d+)([/\-\._])(\d{4})$/;
                 let m = vNo.match(re1);
                 if (m) {
                     vNo = `${m[1]}${m[2]}${newValue.code}${m[4]}${m[5]}`;
@@ -3973,6 +3973,9 @@ function initSettingsTabs() {
         
         genContent.classList.remove('opacity-100', 'z-10');
         genContent.classList.add('opacity-0', 'pointer-events-none', 'z-0');
+
+        // Load projects list when tab opens
+        renderProjectsList();
     };
 }
 
@@ -4000,6 +4003,7 @@ if (addProjectBtn) {
                 showToast(currentLang === 'ar' ? 'تمت إضافة المشروع بنجاح!' : 'Project added successfully!', {}, 4000);
                 document.getElementById('new-project-code').value = '';
                 document.getElementById('new-project-name').value = '';
+                renderProjectsList(); // Refresh the list
             } else {
                 showToast(currentLang === 'ar' ? 'خطأ في الحفظ' : 'Error saving mapping', {}, 4000);
             }
@@ -4008,6 +4012,84 @@ if (addProjectBtn) {
             showToast('error_occurred', {}, 4000);
         }
     });
+}
+
+// Global function for deleting project mapping
+window.deleteProjectMapping = async (type, code) => {
+    if (!confirm(currentLang === 'ar' ? 'هل أنت متأكد من حذف هذا المشروع؟' : 'Are you sure you want to delete this project?')) return;
+    
+    try {
+        const success = await window.api.deleteProjectMapping(type, code);
+        if (success) {
+            showToast(currentLang === 'ar' ? 'تم الحذف بنجاح' : 'Deleted successfully', {}, 3000);
+            renderProjectsList(); // Refresh list
+        } else {
+            showToast(currentLang === 'ar' ? 'خطأ في الحذف' : 'Error deleting', {}, 3000);
+        }
+    } catch (e) {
+        console.error("Delete mapping error:", e);
+        showToast('error_occurred', {}, 3000);
+    }
+};
+
+// Render the existing projects list
+async function renderProjectsList() {
+    const container = document.getElementById('projects-list-container');
+    if (!container) return;
+
+    try {
+        const mappings = await window.api.getMappings();
+        if (!mappings) return;
+
+        let html = '';
+        const saderLabel = currentLang === 'ar' ? 'صادر' : 'Outgoing';
+        const waredLabel = currentLang === 'ar' ? 'وارد' : 'Incoming';
+
+        // Combine both mappings with type labels
+        const allItems = [];
+        if (mappings.sader) {
+            Object.entries(mappings.sader).forEach(([code, name]) => {
+                allItems.push({ code, name, type: 'sader', label: saderLabel });
+            });
+        }
+        if (mappings.wared) {
+            Object.entries(mappings.wared).forEach(([code, name]) => {
+                allItems.push({ code, name, type: 'wared', label: waredLabel });
+            });
+        }
+
+        // Sort items by code descending so newest/highest codes appear at the top
+        allItems.sort((a, b) => {
+            const numA = parseInt(a.code) || 0;
+            const numB = parseInt(b.code) || 0;
+            return numB - numA;
+        });
+
+        if (allItems.length === 0) {
+            container.innerHTML = `<p class="text-[10px] text-on-surface-variant/40 text-center py-4">${currentLang === 'ar' ? 'لا توجد مشاريع بعد' : 'No projects yet'}</p>`;
+            return;
+        }
+
+        allItems.forEach(item => {
+            html += `
+                <div class="flex items-center justify-between gap-3 px-4 py-3 bg-surface-container-highest/60 rounded-xl border border-outline-variant/5 hover:border-primary/20 transition-all">
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <span class="text-[10px] font-mono font-black text-primary bg-primary/10 px-2 py-1 rounded-lg flex-shrink-0">${item.code}</span>
+                        <span class="text-xs font-bold text-on-surface truncate">${item.name}</span>
+                    </div>
+                    <div class="flex items-center gap-3 flex-shrink-0">
+                        <span class="text-[8px] font-black uppercase tracking-widest ${item.type === 'sader' ? 'text-blue-500' : 'text-emerald-500'}">${item.label}</span>
+                        <button onclick="deleteProjectMapping('${item.type}', '${item.code}')" class="p-1.5 rounded-lg text-on-surface-variant/40 hover:text-error hover:bg-error/10 transition-colors" title="${currentLang === 'ar' ? 'حذف' : 'Delete'}">
+                            ${getIcon('delete', 'xs')}
+                        </button>
+                    </div>
+                </div>`;
+        });
+
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('Error loading mappings:', e);
+    }
 }
 
 // Ensure tabs are initialized
