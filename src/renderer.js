@@ -1,5 +1,5 @@
-// Archiva | Digital Curator - Renderer Engine
-console.log("Archiva Renderer Engine Loaded - Update UI Active");
+// Archiva Plus | Digital Curator - Renderer Engine
+console.log("Archiva Plus Renderer Engine Loaded - Update UI Active");
 const viewport = document.getElementById('app-viewport');
 const insightRail = document.getElementById('insight-rail');
 const railContent = document.getElementById('rail-content');
@@ -24,6 +24,109 @@ let chatHistory = [];
 let pendingAttachments = [];
 let historyStack = [];
 const MAX_HISTORY = 50;
+
+// ============================================================
+// AI SESSION LOCK — resets on every app start and every lock
+// ============================================================
+let aiUnlocked = false; // Always starts locked
+let managerSessionUnlocked = false; // Persistent manager session during app runtime
+
+async function requireAiUnlock(options = {}) {
+    // If it's a string, it's just the reason (backwards compatibility)
+    const config = typeof options === 'string' ? { reason: options } : options;
+    const requiredRole = config.requiredRole || 'ai'; // 'ai' or 'manager'
+
+    // Hierarchy check: Manager session unlocks everything
+    if (managerSessionUnlocked) return true;
+    // AI session only unlocks AI features
+    if (aiUnlocked && requiredRole === 'ai') return true;
+    
+    const reasonText = config.reason || (currentLang === 'ar' ? 'أدخل كلمة السر لتفعيل وظائف الذكاء الاصطناعي في هذه الجلسة' : 'Enter the password to enable AI features for this session');
+    const titleText = config.title || (currentLang === 'ar' ? 'تفعيل الذكاء الاصطناعي' : 'Unlock AI Features');
+    const iconSvg = config.icon || `<path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5 5.5-2.5-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/>`;
+
+    return new Promise((resolve) => {
+        // Build modal overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'ai-unlock-overlay';
+        overlay.className = 'fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm';
+        overlay.innerHTML = `
+            <div class="relative w-[360px] bg-surface-container rounded-[2rem] p-8 shadow-2xl border border-outline-variant/20 flex flex-col gap-6 animate-[fadeSlideIn_0.25s_ease]">
+                <div class="flex flex-col items-center gap-3">
+                    <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                        <svg viewBox="0 0 24 24" class="w-7 h-7 fill-current">${iconSvg}</svg>
+                    </div>
+                    <h2 class="text-lg font-black text-on-surface text-center">${titleText}</h2>
+                    <p class="text-xs text-on-surface-variant/60 text-center font-bold">${reasonText}</p>
+                </div>
+                <div class="relative">
+                    <input id="ai-pwd-input" type="password" autocomplete="current-password" placeholder="${currentLang === 'ar' ? 'كلمة السر...' : 'Password...'}" 
+                        class="w-full bg-surface-container-highest text-sm font-bold text-on-surface outline-none border border-outline-variant/20 rounded-xl px-4 py-3 focus:border-primary/60 transition-all placeholder:text-on-surface-variant/30 text-center tracking-[0.25em]">
+                    <p id="ai-pwd-error" class="hidden text-[10px] text-error font-black text-center mt-2"></p>
+                </div>
+                <div class="flex gap-3">
+                    <button id="ai-pwd-cancel" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest border border-outline-variant/20 rounded-xl hover:bg-surface-container-high transition-all text-on-surface-variant">${currentLang === 'ar' ? 'إلغاء' : 'Cancel'}</button>
+                    <button id="ai-pwd-confirm" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest bg-primary text-white rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-primary/20">${currentLang === 'ar' ? 'تفعيل' : 'Unlock'}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const input = overlay.querySelector('#ai-pwd-input');
+        const error = overlay.querySelector('#ai-pwd-error');
+        const confirmBtn = overlay.querySelector('#ai-pwd-confirm');
+        const cancelBtn = overlay.querySelector('#ai-pwd-cancel');
+
+        input.focus();
+
+        const handleAttempt = async () => {
+            const password = input.value.trim();
+            if (!password) return;
+
+            confirmBtn.disabled = true;
+            confirmBtn.innerText = '...';
+            error.classList.add('hidden');
+
+            try {
+                const result = await window.api.validateFeaturePassword(password);
+                if (result.success) {
+                    if (result.type === 'manager') {
+                        managerSessionUnlocked = true;
+                        aiUnlocked = true;
+                        overlay.remove();
+                        resolve(true);
+                    } else if (result.type === 'ai') {
+                        if (requiredRole === 'manager') {
+                            error.innerText = currentLang === 'ar' ? 'هذه كلمة السر للذكاء الاصطناعي فقط، لا تفتح الإعدادات' : 'AI password cannot unlock Manager settings';
+                            error.classList.remove('hidden');
+                            input.classList.add('animate-shake');
+                            setTimeout(() => input.classList.remove('animate-shake'), 500);
+                        } else {
+                            aiUnlocked = true;
+                            overlay.remove();
+                            resolve(true);
+                        }
+                    }
+                } else {
+                    error.innerText = currentLang === 'ar' ? 'كلمة السر غير صحيحة' : 'Incorrect password';
+                    error.classList.remove('hidden');
+                    input.classList.add('animate-shake');
+                    setTimeout(() => input.classList.remove('animate-shake'), 500);
+                }
+            } catch (e) {
+                console.error('Password validation error:', e);
+            } finally {
+                confirmBtn.disabled = false;
+                confirmBtn.innerText = currentLang === 'ar' ? 'تفعيل' : 'Unlock';
+            }
+        };
+
+        confirmBtn.onclick = handleAttempt;
+        input.onkeydown = (e) => { if (e.key === 'Enter') handleAttempt(); };
+        cancelBtn.onclick = () => { overlay.remove(); resolve(false); };
+    });
+}
+
 
 const SVG_ICONS = {
     add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
@@ -61,6 +164,11 @@ const SVG_ICONS = {
 function getIcon(name, classes = "") {
     const path = SVG_ICONS[name] || SVG_ICONS['description'];
     return `<svg class="icon-svg ${classes}" viewBox="0 0 24 24"><path d="${path}"/></svg>`;
+}
+
+function escPath(p) {
+    if (!p) return "";
+    return p.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function copyToClipboard(text, btnElement) {
@@ -124,7 +232,7 @@ const i18n = {
         archive_empty: "Archive is empty.", asset_intel: "Asset Intelligence", archived: "Archived",
         ai_engine: "Intelligence Engine", ai_status: "Systems Operational", ai_desc: "Archiva Plus AI is scanning your documents for deep pattern recognition.",
         archived_title: "Archive",
-        ai_welcome: "Hello. I am the Archiva Intelligence Engine. I can analyze your documents, extract insights, and answer questions. Upload an image or type a message to begin.",
+        ai_welcome: "Hello. I am the Archiva Plus Intelligence Engine. I can analyze your documents, extract insights, and answer questions. Upload an image or type a message to begin.",
         chat_placeholder: "Ask anything or attach a document...",
         new_chat: "New Chat",
         chat_reset: "Conversation reset successfully",
@@ -155,7 +263,7 @@ const i18n = {
         status_error: "Analysis failed. Using manual values.",
         status_fail: "System error during processing.",
         re_analyze_title: "AI Analysis",
-        re_analyze_msg: "Do you want to re-analyze this document using Archiva Intelligence?",
+        re_analyze_msg: "Do you want to re-analyze this document using Archiva Plus Intelligence?",
         today: "Today",
         yesterday: "Yesterday",
         this_week: "Last 7 Days",
@@ -189,7 +297,7 @@ const i18n = {
         use_similar_btn: "Use Existing Folder",
         create_new_btn: "Create New",
         update_title: "Software Update",
-        update_available_msg: "A new version of Archiva is being downloaded in the background.",
+        update_available_msg: "A new version of Archiva Plus is being downloaded in the background.",
         update_downloaded_msg: "The update is ready. Install now to enjoy the latest features?",
         update_later: "Later",
         update_now: "Update Now",
@@ -226,7 +334,7 @@ const i18n = {
         archive_empty: "الأرشيف فارغ.", asset_intel: "الملفات المؤرشفة", archived: "تمت الأرشفة",
         ai_engine: "محرك الذكاء", ai_status: "الأنظمة تعمل", ai_desc: "يقوم نظام Archiva Plus AI بفحص مستنداتك للتعرف على الأنماط العميقة.",
         archived_title: "مؤرشف",
-        ai_welcome: "مرحباً. أنا محرك الذكاء الخاص بـ Archiva. يمكنني تحليل مستنداتك واستخراج الرؤى والإجابة على أسئلتك. أرفق صورة أو اكتب رسالة للبدء.",
+        ai_welcome: "مرحباً. أنا محرك الذكاء الخاص بـ Archiva Plus. يمكنني تحليل مستنداتك واستخراج الرؤى والإجابة على أسئلتك. أرفق صورة أو اكتب رسالة للبدء.",
         chat_placeholder: "اسأل عن أي شيء أو أرفق مستنداً...",
         new_chat: "محادثة جديدة",
         chat_reset: "تمت إعادة تعيين المحادثة",
@@ -257,7 +365,7 @@ const i18n = {
         status_error: "فشل التحليل. تم استخدام بيانات افتراضية.",
         status_fail: "حدث خطأ في النظام أثناء المعالجة.",
         re_analyze_title: "تحليل الذكاء",
-        re_analyze_msg: "هل تريد إعادة تحليل هذا المستند باستخدام ذكاء Archiva آلياً؟",
+        re_analyze_msg: "هل تريد إعادة تحليل هذا المستند باستخدام ذكاء Archiva Plus آلياً؟",
         today: "اليوم",
         yesterday: "أمس",
         step_upload: "رفع الملف",
@@ -292,7 +400,7 @@ const i18n = {
         use_similar_btn: "استخدام المجلد الموجود",
         create_new_btn: "إنشاء مجلد جديد",
         update_title: "تحديث البرنامج",
-        update_available_msg: "يوجد إصدار جديد، جاري التحميل في الخلفية...",
+        update_available_msg: "يوجد إصدار جديد من Archiva Plus، جاري التحميل في الخلفية...",
         update_downloaded_msg: "التحديث جاهز. هل تود تثبيته الآن والاستمتاع بالمميزات الجديدة؟",
         update_later: "لاحقاً",
         update_now: "تحديث الآن",
@@ -666,6 +774,12 @@ function toggleSettingsModal(show) {
         modal.classList.toggle('hidden', !show);
         if (show) {
             setTimeout(updateSegmentedIndicators, 10);
+        } else {
+            // Relock AI session when closing settings, UNLESS it's a manager session
+            if (!managerSessionUnlocked) {
+                aiUnlocked = false;
+                if (window.api.lockFeatures) window.api.lockFeatures();
+            }
         }
     }
 }
@@ -830,6 +944,10 @@ function setupChatUI() {
     const triggerSend = async () => {
         const text = input.value.trim();
         if (!text && pendingAttachments.length === 0) return;
+
+        // Require AI unlock before sending any chat message
+        const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لبدء المحادثة مع الذكاء الاصطناعي' : 'Enter password to start AI chat');
+        if (!unlocked) return;
 
         input.value = '';
         input.style.height = 'auto';
@@ -1073,7 +1191,7 @@ function appendMessageToUI(role, text, attachments = null, id = null) {
                 <div class="flex items-center gap-2.5 mb-2 group ${isRtl ? 'flex-row-reverse' : 'flex-row'}">
                     <div class="relative w-6 h-6 rounded-full bg-surface-container flex items-center justify-center flex-shrink-0 border border-outline-variant/10 overflow-hidden shadow-sm">
                         ${isLoading ? `<div class="absolute inset-0 rounded-full border-[1.5px] border-primary/20 border-t-primary animate-spin"></div>` : ''}
-                        <img src="../logo/Archiva Plus.png" class="w-4 h-4 object-contain" alt="Archiva AI">
+                        <img src="../logo/Archiva Plus.png" class="w-4 h-4 object-contain" alt="Archiva Plus AI">
                     </div>
                     <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/50">Archiva Plus AI</span>
                 </div>
@@ -1672,7 +1790,7 @@ function renderGridCard(doc) {
     return `
         <div class="curator-card group cursor-pointer relative ${isSelected ? 'ring-2 ring-primary' : ''}" 
             onclick="handleDocClick(event, '${doc.id}')" 
-            ondblclick="openPreview('${doc.file_path.replace(/\\/g, '\\\\')}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')"
+            ondblclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')"
             data-doc-id="${doc.id}">
             ${isSelectionMode ? `
                 <div class="absolute top-4 right-4 z-20">
@@ -1686,7 +1804,7 @@ function renderGridCard(doc) {
                     <!-- Format tag hidden as the central text now represents it -->
                 ${!isSelectionMode ? `
                     <div class="absolute top-4 right-4 z-20">
-                        <button class="delete-doc-btn p-1.5 text-on-surface-variant/60 hover:text-error bg-surface-container-highest/80 backdrop-blur-md rounded-full border border-outline-variant/20 shadow-sm transition-all opacity-0 group-hover:opacity-100" data-id="${doc.id}" data-path="${doc.file_path.replace(/\\/g, '\\\\')}" type="button">
+                        <button class="delete-doc-btn p-1.5 text-on-surface-variant/60 hover:text-error bg-surface-container-highest/80 backdrop-blur-md rounded-full border border-outline-variant/20 shadow-sm transition-all opacity-0 group-hover:opacity-100" data-id="${doc.id}" data-path="${escPath(doc.file_path)}" type="button">
                             ${getIcon('delete', 'sm')}
                         </button>
                     </div>
@@ -1764,7 +1882,7 @@ function renderListRow(doc) {
     return `
         <div class="grid grid-cols-12 px-8 py-6 items-center hover:bg-surface-container-low transition-colors cursor-pointer group ${isSelected ? 'bg-primary/5' : ''}" 
             onclick="handleDocClick(event, '${doc.id}')"
-            ondblclick="openPreview('${doc.file_path.replace(/\\/g, '\\\\')}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
+            ondblclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
             <div class="col-span-8 flex items-center gap-4">
                 ${isSelectionMode ? `
                     <input type="checkbox" class="w-5 h-5 rounded border-outline-variant/30 text-primary focus:ring-primary pointer-events-none" ${isSelected ? 'checked' : ''}>
@@ -1788,7 +1906,7 @@ function renderListRow(doc) {
             <div class="col-span-4 flex items-center justify-end gap-6 text-[10px] text-on-surface-variant/60 font-black uppercase tracking-widest">
                 ${formatDateWithTime(doc.date_added)}
                 ${!isSelectionMode ? `
-                    <button class="delete-doc-btn p-2 text-on-surface-variant/20 hover:text-error rounded-lg transition-all opacity-0 group-hover:opacity-100" data-id="${doc.id}" data-path="${doc.file_path.replace(/\\/g, '\\\\')}">
+                    <button class="delete-doc-btn p-2 text-on-surface-variant/20 hover:text-error rounded-lg transition-all opacity-0 group-hover:opacity-100" data-id="${doc.id}" data-path="${escPath(doc.file_path)}">
                         ${getIcon('delete', 'sm')}
                     </button>
                 ` : ''}
@@ -1834,7 +1952,11 @@ function enterStagingState() {
         forceToggle.classList.add('bg-surface-container-low', 'text-on-surface-variant');
         forceToggle.onclick = async (e) => {
             e.stopPropagation();
-
+            if (!forceAiForNextUpload) {
+                // Turning ON — require password
+                const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'تحليل ذكي مطلوب — أدخل كلمة السر لتفعيل الذكاء الاصطناعي' : 'AI Analysis required — enter password to enable');
+                if (!unlocked) return;
+            }
             forceAiForNextUpload = !forceAiForNextUpload;
             if (forceAiForNextUpload) {
                 forceToggle.classList.remove('bg-surface-container-low', 'text-on-surface-variant');
@@ -1985,7 +2107,7 @@ function renderPendingList() {
         return `
             <div class="px-8 py-4 flex items-center justify-between group">
                 <div class="flex items-center gap-4">
-                    <div class="text-primary opacity-40 hover:opacity-100 cursor-pointer transition-all active:scale-95" onclick="openPreview('${(file.path || '').replace(/\\/g, '\\\\')}', '${ext}', '${(file.name || '').replace(/'/g, "\\'")}')" title="${currentLang === 'ar' ? 'معاينة الملف' : 'Preview File'}">
+                    <div class="text-primary opacity-40 hover:opacity-100 cursor-pointer transition-all active:scale-95" onclick="openPreview('${escPath(file.path)}', '${ext}', '${(file.name || '').replace(/'/g, "\\'")}')" title="${currentLang === 'ar' ? 'معاينة الملف' : 'Preview File'}">
                         ${getIcon(icon)}
                     </div>
                     <div>
@@ -2033,11 +2155,19 @@ function selectDocument(id, isSoftUpdate = false) {
                     <span class="h-px flex-1 bg-outline-variant/10"></span>
                 </div>
                 
-                <h2 id="main-doc-title-${doc.id}" class="field-value font-headline font-extrabold text-3xl tracking-tight text-on-surface leading-tight break-anywhere cursor-context-menu" 
-                    oncontextmenu="event.preventDefault(); !${isProcessing} && openFieldEditor(this.parentElement, '${doc.id}', 'title', \`${(doc.title || '').replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'العنوان' : 'Title'}')"
-                    title="${!isProcessing ? (currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit') : ''}">
-                    ${isProcessing ? (doc.file?.replace(/_/g, ' ').replace(/-/g, ' ') || 'Intelligence Extraction...') : doc.title}
-                </h2>
+                <!-- عنوان الملف (Main Title Area) -->
+                <div id="field-title-${doc.id}" class="transition-all group/title relative cursor-context-menu border border-transparent rounded-[2rem]">
+                    <div class="title-edit-header hidden items-center gap-2 mb-3 px-5 pt-5">
+                        <div class="text-primary">${getIcon('title', 'xs')}</div>
+                        <span class="text-[10px] font-black uppercase tracking-widest text-primary">${currentLang === 'ar' ? 'تعديل العنوان' : 'Edit Title'}</span>
+                    </div>
+
+                    <h2 class="field-value font-headline font-extrabold text-3xl tracking-tight text-on-surface leading-tight break-anywhere px-0 transition-all"
+                        oncontextmenu="event.preventDefault(); !${isProcessing} && openFieldEditor(this.parentElement, '${doc.id}', 'title', \`${(doc.title || '').trim().replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'العنوان' : 'Title'}')"
+                        title="${!isProcessing ? (currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit') : ''}">
+                        ${isProcessing ? (doc.file?.replace(/\.pdf$/i, '').replace(/[_-]/g, '/') || 'Intelligence Extraction...') : (doc.title || '').trim()}
+                    </h2>
+                </div>
                 
                 ${!isProcessing ? `
                 <!-- ===== ركن البيانات الإدارية (Smart Administrative Data) ===== -->
@@ -2045,7 +2175,6 @@ function selectDocument(id, isSoftUpdate = false) {
                     <div class="flex items-center gap-2 mb-4">
                         <span class="text-[10px] font-black uppercase tracking-widest text-primary/60">${currentLang === 'ar' ? 'البيانات التحليلية' : 'Analytical Data'}</span>
                         <div class="h-px flex-1 bg-outline-variant/10"></div>
-                        <span class="text-[8px] text-on-surface-variant/30 font-bold">${currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit'}</span>
                     </div>
 
                                     <!-- الموضوع -->
@@ -2098,7 +2227,7 @@ function selectDocument(id, isSoftUpdate = false) {
                                 <div class="text-primary/40 group-hover/field:text-primary transition-colors">${getIcon('folder', 'xs')}</div>
                                 <span class="text-[9px] font-black uppercase tracking-widest text-on-surface-variant/40">${t('file_path')}</span>
                             </div>
-                            <button class="w-8 h-8 flex items-center justify-center text-primary/40 hover:text-primary hover:bg-primary/5 rounded-lg transition-all" onclick="copyToClipboard('${doc.file_path.replace(/\\/g, '\\\\')}', this)" title="${t('copy_path')}">
+                            <button class="w-8 h-8 flex items-center justify-center text-primary/40 hover:text-primary hover:bg-primary/5 rounded-lg transition-all" onclick="copyToClipboard('${escPath(doc.file_path)}', this)" title="${t('copy_path')}">
                                 ${getIcon('content_copy', 'xs')}
                             </button>
                         </div>
@@ -2106,7 +2235,7 @@ function selectDocument(id, isSoftUpdate = false) {
                     </div>
                     
                     <!-- زر فتح المجلد الخارجي (Open Folder Full Width Button) -->
-                    <button class="w-full py-3 bg-primary text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md shadow-primary/20 hover:bg-primary-dim active:scale-95 transition-all flex items-center justify-center gap-2" onclick="window.api.showItemInFolder('${doc.file_path.replace(/\\/g, '\\\\')}')">
+                    <button class="w-full py-3 bg-primary text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md shadow-primary/20 hover:bg-primary-dim active:scale-95 transition-all flex items-center justify-center gap-2" onclick="window.api.showItemInFolder('${escPath(doc.file_path)}')">
                         <span>${t('open_folder')}</span>
                     </button>
                 </div>
@@ -2124,7 +2253,6 @@ function selectDocument(id, isSoftUpdate = false) {
                         <div class="sm">${getIcon('description')}</div>
                         <span class="text-[10px] font-black uppercase tracking-widest">${currentLang === 'ar' ? 'ملخص المحتوى' : 'Content Summary'}</span>
                     </div>
-                    ${!isProcessing ? `<span class="text-[8px] text-primary/30 font-bold opacity-0 group-hover/summary:opacity-100 transition-opacity">${currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit'}</span>` : ''}
                 </div>
                 
                 ${isProcessing ? `
@@ -2144,7 +2272,7 @@ function selectDocument(id, isSoftUpdate = false) {
                 <div class="flex flex-col gap-3">
                     <div class="flex items-center gap-2">
                         <button class="flex-1 py-4 bg-primary text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-primary/20 hover:bg-primary-dim active:scale-95 transition-all flex items-center justify-center gap-2" 
-                            onclick="openPreview('${doc.file_path.replace(/\\/g, '\\\\')}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
+                            onclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
                             <span>${t('open_file')}</span>
                         </button>
                         ${isProcessing ? `
@@ -2163,7 +2291,7 @@ function selectDocument(id, isSoftUpdate = false) {
                     </div>
                     <div class="grid grid-cols-2 gap-3">
                         <button class="py-4 bg-surface-container-high text-primary border border-outline-variant/10 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-surface-container-highest active:scale-95 transition-all flex items-center justify-center gap-2" 
-                            onclick="window.api.openPath('${doc.file_path.replace(/\\/g, '\\\\')}')">
+                            onclick="window.api.openPath('${escPath(doc.file_path)}')">
                             ${getIcon('arrow_outward', 'sm')}
                             <span>${t('open_in_system')}</span>
                         </button>
@@ -2207,6 +2335,10 @@ function selectDocument(id, isSoftUpdate = false) {
                     showToast(currentLang === 'ar' ? 'يرجى تفعيل التحليل الذكي من الإعدادات أولاً' : 'Please enable AI Analysis in settings first');
                     return;
                 }
+                // Require AI password
+                const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لإعادة التحليل بالذكاء الاصطناعي' : 'Enter password to run AI re-analysis');
+                if (!unlocked) return;
+
                 // Play visual feedback immediately
                 reanalyzeBtn.classList.add('bg-primary/20', 'scale-95');
                 setTimeout(() => reanalyzeBtn.classList.remove('bg-primary/20', 'scale-95'), 150);
@@ -2246,7 +2378,7 @@ function selectDocument(id, isSoftUpdate = false) {
 // ============================================================
 // INLINE FIELD EDITOR (Right-click to edit)
 // ============================================================
-window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldLabel) {
+window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, fieldLabel) {
     // Prevent double-opening
     if (cardEl.querySelector('input, textarea, select')) return;
 
@@ -2337,18 +2469,110 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
                 selD.addEventListener(ev, fn);
             }
         };
+    } else if (fieldKey === 'project') {
+        const mappings = await window.api.getMappings();
+        const doc = documents.find(d => d.id == docId);
+        let initialType = doc.type || 'صادر';
+        
+        const container = document.createElement('div');
+        container.className = 'flex flex-col gap-2 mt-2 w-full';
+        
+        const btnGroup = document.createElement('div');
+        btnGroup.className = 'flex gap-2';
+        
+        const btnSader = document.createElement('button');
+        btnSader.className = `flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors ${initialType === 'صادر' ? 'bg-primary text-white border-primary' : 'border-primary/20 text-on-surface hover:bg-primary/10'}`;
+        btnSader.textContent = 'صادر';
+        
+        const btnWared = document.createElement('button');
+        btnWared.className = `flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors ${initialType === 'وارد' ? 'bg-primary text-white border-primary' : 'border-primary/20 text-on-surface hover:bg-primary/10'}`;
+        btnWared.textContent = 'وارد';
+        
+        btnGroup.appendChild(btnSader);
+        btnGroup.appendChild(btnWared);
+        
+        const sel = document.createElement('select');
+        sel.className = 'w-full bg-surface-container-highest text-[10px] font-bold text-on-surface outline-none border border-primary/20 rounded-lg px-2 py-2 transition-all focus:border-primary/60 cursor-pointer appearance-none';
+        
+        const renderOptions = (typeStr) => {
+            sel.innerHTML = '';
+            const map = typeStr === 'صادر' ? mappings.sader : mappings.wared;
+            const nameCounts = {};
+            for (let k in map) nameCounts[map[k]] = (nameCounts[map[k]] || 0) + 1;
+            
+            let optionsHtml = '<option value="" disabled selected>اختر المشروع...</option>';
+            for (let code in map) {
+                const rawName = map[code];
+                const displayName = nameCounts[rawName] > 1 ? `${rawName} ${code}` : rawName;
+                const isSelected = (doc.version_no && doc.version_no.includes(code)) || currentValue === displayName || currentValue === rawName;
+                optionsHtml += `<option value="${code}" ${isSelected ? 'selected' : ''}>${displayName}</option>`;
+            }
+            sel.innerHTML = optionsHtml;
+        };
+        
+        renderOptions(initialType);
+        
+        btnSader.onclick = (e) => {
+            e.preventDefault();
+            initialType = 'صادر';
+            btnSader.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors bg-primary text-white border-primary';
+            btnWared.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors border-primary/20 text-on-surface hover:bg-primary/10';
+            renderOptions('صادر');
+        };
+        
+        btnWared.onclick = (e) => {
+            e.preventDefault();
+            initialType = 'وارد';
+            btnWared.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors bg-primary text-white border-primary';
+            btnSader.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors border-primary/20 text-on-surface hover:bg-primary/10';
+            renderOptions('وارد');
+        };
+        
+        container.appendChild(btnGroup);
+        container.appendChild(sel);
+        
+        inputEl = {
+            _isCustom: true,
+            container: container,
+            get value() {
+                if (!sel.value) return currentValue;
+                const map = initialType === 'صادر' ? mappings.sader : mappings.wared;
+                const rawName = map[sel.value];
+                const nameCounts = {};
+                for (let k in map) nameCounts[map[k]] = (nameCounts[map[k]] || 0) + 1;
+                const displayName = nameCounts[rawName] > 1 ? `${rawName} ${sel.value}` : rawName;
+                return { project: displayName, type: initialType, code: sel.value };
+            },
+            focus: () => sel.focus(),
+            addEventListener: (ev, fn) => {
+                sel.addEventListener(ev, fn);
+            }
+        };
     } else {
         inputEl = document.createElement(isMultiline ? 'textarea' : 'input');
         inputEl.value = (currentValue === '—' || !currentValue) ? '' : currentValue;
         inputEl.placeholder = `${currentLang === 'ar' ? 'أدخل' : 'Enter'} ${fieldLabel}...`;
         if (isMultiline) inputEl.rows = 3;
-        inputEl.className = `w-full bg-surface-container-highest text-sm font-bold text-on-surface outline-none border border-primary/20 rounded-xl px-3 py-2.5 resize-none mt-2 placeholder:text-on-surface-variant/30 transition-all focus:border-primary/60 ${isMultiline ? 'min-h-[5rem]' : ''}`;
+        
+        // Match font size and weight based on the field
+        let fontSizeClass = 'text-sm';
+        let fontWeightClass = 'font-bold';
+        if (fieldKey === 'title') {
+            fontSizeClass = 'text-2xl';
+            fontWeightClass = 'font-extrabold';
+        } else if (fieldKey === 'summary') {
+            fontSizeClass = 'text-[14px]';
+            fontWeightClass = 'font-bold italic';
+        }
+        
+        inputEl.className = `w-full bg-surface-container-highest ${fontSizeClass} ${fontWeightClass} text-on-surface outline-none border border-primary/20 rounded-xl px-3 py-2.5 resize-none mt-2 placeholder:text-on-surface-variant/30 transition-all focus:border-primary/60 focus:bg-surface-container-high ${isMultiline ? 'min-h-[5rem]' : ''}`;
     }
 
     // Replace value text with input
     if (inputEl._isCustom) {
         valueEl.replaceWith(inputEl.container);
     } else {
+        // For title, we want to keep the h2 as a wrapper if it helps, but usually we just replace the whole field-value
         valueEl.replaceWith(inputEl);
     }
     inputEl.focus();
@@ -2367,8 +2591,20 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
         }, 10);
     }
 
-    // Highlight the card subtly (only if it's a standard field card, not the main title)
-    if (fieldKey !== 'title') {
+    // Highlight the card subtly
+    if (fieldKey === 'title') {
+        cardEl.classList.add('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+        cardEl.classList.remove('border-transparent');
+        const header = cardEl.querySelector('.title-edit-header');
+        if (header) {
+            header.classList.remove('hidden');
+            header.classList.add('flex');
+        }
+        // If we replaced h2 with input, the input is now a direct child. Let's add padding to IT.
+        if (inputEl && !inputEl._isCustom) {
+            inputEl.classList.add('mx-5', 'mb-5', 'w-[calc(100%-2.5rem)]');
+        }
+    } else {
         cardEl.classList.add('bg-surface-container-highest/30', 'transition-all');
         cardEl.classList.remove('hover:border-primary/20');
     }
@@ -2378,11 +2614,11 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
     actions.id = `actions-${fieldKey}`;
     actions.className = 'flex gap-3 mt-3 justify-end items-center w-full';
     actions.innerHTML = `
-        <button id="cancel-edit-${fieldKey}" class="px-4 py-1.5 text-[9px] font-black uppercase tracking-widest text-on-surface-variant bg-surface-container-highest rounded-xl hover:text-error transition-all flex items-center gap-1.5 cursor-pointer border border-outline-variant/20">
+        <button id="cancel-edit-${fieldKey}" class="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-on-surface-variant bg-surface-container-highest rounded-xl hover:text-error transition-all flex items-center gap-2 cursor-pointer border border-outline-variant/20 hover:bg-surface-container-high">
             ${getIcon('close', 'xs')} ${currentLang === 'ar' ? 'إلغاء' : 'Cancel'}
         </button>
-        <button id="save-edit-${fieldKey}" class="px-5 py-1.5 text-[9px] font-black uppercase tracking-widest text-white bg-primary rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-md shadow-primary/20 flex items-center gap-1.5 cursor-pointer">
-            ${getIcon('check', 'xs')} ${currentLang === 'ar' ? 'حفظ' : 'Save'}
+        <button id="save-edit-${fieldKey}" class="px-6 py-2 text-[10px] font-black uppercase tracking-widest text-white bg-primary rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-primary/20 flex items-center gap-2 cursor-pointer">
+            ${getIcon('check', 'xs')} ${currentLang === 'ar' ? 'حفظ التغييرات' : 'Save Changes'}
         </button>
     `;
 
@@ -2405,6 +2641,12 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
         // All other fields: append buttons directly inside the card
         cardEl.style.setProperty('display', 'flex', 'important');
         cardEl.style.setProperty('flex-direction', 'column', 'important');
+        
+        // Fix for title buttons clipping
+        if (fieldKey === 'title') {
+            actions.classList.add('px-5', 'pb-5', 'mt-0');
+        }
+        
         cardEl.appendChild(actions);
     }
 
@@ -2429,7 +2671,17 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
         cardEl.style.flex = ''; // Reset expansion
         if (siblingCard) siblingCard.style.display = ''; // Restore sibling
         
-        if (fieldKey !== 'title') {
+        if (fieldKey === 'title') {
+            cardEl.classList.remove('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+            cardEl.classList.add('border-transparent');
+            const header = cardEl.querySelector('.title-edit-header');
+            if (header) {
+                header.classList.add('hidden');
+                header.classList.remove('flex');
+            }
+            const h2 = cardEl.querySelector('h2');
+            if (h2) h2.classList.remove('px-5', 'pb-5');
+        } else {
             cardEl.classList.remove('bg-surface-container-highest/30');
             cardEl.classList.add('hover:border-primary/20');
         }
@@ -2439,8 +2691,40 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
     };
 
     const saveFn = async () => {
-        const newValue = inputEl.value.trim();
-        if (newValue === currentValue) { cancelFn(); return; }
+        let newValue = inputEl.value;
+        let updatePayload = {};
+        let finalDisplayValue = '';
+        
+        if (typeof newValue === 'object' && newValue !== null) {
+            if (newValue.project === currentValue) { cancelFn(); return; }
+            finalDisplayValue = newValue.project;
+            updatePayload = { project: newValue.project, type: newValue.type };
+            
+            const doc = documents.find(d => d.id == docId);
+            let vNo = doc.version_no || '';
+            if (vNo && vNo !== 'غير محدد') {
+                const re1 = /^(\d{4})([/\-\._])(\d{3})([/\-\._])(\d+)$/;
+                const re2 = /^(\d{3})([/\-\._])(\d{4})([/\-\._])(\d+)$/;
+                const re3 = /^(\d{4})([/\-\._])(\d{3})$/;
+                const re4 = /^(\d{3})([/\-\._])(\d{4})$/;
+                let m = vNo.match(re1);
+                if (m) {
+                    vNo = `${m[1]}${m[2]}${newValue.code}${m[4]}${m[5]}`;
+                } else if ((m = vNo.match(re2))) {
+                    vNo = `${newValue.code}${m[2]}${m[3]}${m[4]}${m[5]}`;
+                } else if ((m = vNo.match(re3))) {
+                    vNo = `${m[1]}${m[2]}${newValue.code}`;
+                } else if ((m = vNo.match(re4))) {
+                    vNo = `${newValue.code}${m[2]}${m[3]}`;
+                }
+                updatePayload.version_no = vNo;
+            }
+        } else {
+            newValue = typeof newValue === 'string' ? newValue.trim() : newValue;
+            if (newValue === currentValue) { cancelFn(); return; }
+            finalDisplayValue = newValue;
+            updatePayload = { [fieldKey]: newValue };
+        }
 
         const saveBtn = document.getElementById(`save-edit-${fieldKey}`);
         if (saveBtn) {
@@ -2452,15 +2736,19 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
             // Record history before update
             pushToHistory({ id: docId, field: fieldKey, oldValue: currentValue });
             
-            const result = await window.api.updateDocument(docId, { [fieldKey]: newValue });
+            const result = await window.api.updateDocument(docId, updatePayload);
             if (result.success) {
                 // 1. تحديث المصفوفة المحلية فوراً
                 const docIndex = documents.findIndex(d => d.id == docId);
                 if (docIndex !== -1) {
-                    documents[docIndex][fieldKey] = newValue;
-                    // إذا تم تغيير الموضوع، قد يتغير المسار أيضاً، لذا نحتاج لتحديثه إذا أرسله السيرفر
-                    if (result.newPath) documents[docIndex].file_path = result.newPath;
-                    if (result.newFile) documents[docIndex].file = result.newFile;
+                    if (result.updatedDoc) {
+                        documents[docIndex] = result.updatedDoc;
+                        finalDisplayValue = result.updatedDoc[fieldKey] || finalDisplayValue;
+                    } else {
+                        Object.assign(documents[docIndex], updatePayload);
+                        if (result.newPath) documents[docIndex].file_path = result.newPath;
+                        if (result.newFile) documents[docIndex].file = result.newFile;
+                    }
                 }
 
                 // 2. تحديث عرض القيمة في الواجهة
@@ -2471,9 +2759,9 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
                 
                 if (fieldKey === 'summary') {
                     p.className = "field-value text-[14px] leading-relaxed text-on-surface font-bold italic";
-                    p.textContent = `"${newValue}"`;
+                    p.textContent = `"${finalDisplayValue}"`;
                 } else {
-                    p.textContent = newValue || '—';
+                    p.textContent = finalDisplayValue || '—';
                 }
                 (inputEl.dropdownContainer || inputEl.container || inputEl).replaceWith(p);
                 actions.remove();
@@ -2483,7 +2771,17 @@ window.openFieldEditor = function (cardEl, docId, fieldKey, currentValue, fieldL
                 cardEl.style.flex = ''; // Reset expansion
                 if (siblingCard) siblingCard.style.display = ''; // Restore sibling
 
-                if (fieldKey !== 'title') {
+                if (fieldKey === 'title') {
+                    cardEl.classList.remove('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+                    cardEl.classList.add('border-transparent');
+                    const header = cardEl.querySelector('.title-edit-header');
+                    if (header) {
+                        header.classList.add('hidden');
+                        header.classList.remove('flex');
+                    }
+                    const h2 = cardEl.querySelector('h2');
+                    if (h2) h2.classList.remove('px-5', 'pb-5');
+                } else {
                     cardEl.classList.remove('bg-surface-container-highest/30');
                     cardEl.classList.add('hover:border-primary/20');
                 }
@@ -2830,7 +3128,7 @@ if (closeRail && insightRail) closeRail.onclick = () => insightRail.classList.ad
 
 // Initialized at bottom
 
-console.log("Archiva Intelligence Engine Initialized.");
+console.log("Archiva Plus Intelligence Engine Initialized.");
 
 document.addEventListener('click', (e) => {
     const filterMenu = document.getElementById('filter-menu');
@@ -2902,8 +3200,19 @@ async function initAutoAnalysisToggle() {
 const autoAnalysisToggleBtn = document.getElementById('auto-analysis-toggle');
 if (autoAnalysisToggleBtn) {
     autoAnalysisToggleBtn.addEventListener('click', async () => {
-
         const nextState = !_autoAnalysisEnabled;
+
+        // If turning ON, require password
+        if (nextState) {
+            const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لتفعيل التحليل التلقائي بالذكاء الاصطناعي' : 'Enter password to enable Auto AI Analysis');
+            if (!unlocked) return;
+        } else {
+            // Lock AI session when turning off, UNLESS it's a persistent manager session
+            if (!managerSessionUnlocked) {
+                aiUnlocked = false;
+                if (window.api.lockFeatures) window.api.lockFeatures();
+            }
+        }
 
         // Immediately flip UI for instant tactile feedback
         setAutoAnalysisUI(nextState, nextState ? new Date().toISOString() : null);
@@ -3314,7 +3623,7 @@ async function syncUpdateStatus(silent = true) {
                     <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
                 </div>
                 <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
-                    <span class="text-[9px] tracking-[0.2em]">Archiva</span>
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
                     <span class="font-mono text-[10px]">v${currentVersion}</span>
                 </div>
             `;
@@ -3557,4 +3866,97 @@ document.getElementById('feature-password-input')?.addEventListener('keydown', (
 
 // Call init on load
 initFeaturesLock();
+
+// ============================================================
+// SETTINGS TABS & PROJECT MANAGEMENT
+// ============================================================
+
+function initSettingsTabs() {
+    const tabGenBtn = document.getElementById('tab-general-btn');
+    const tabManBtn = document.getElementById('tab-manager-btn');
+    const tabIndicator = document.getElementById('settings-tab-indicator');
+    const genContent = document.getElementById('tab-general-content');
+    const manContent = document.getElementById('tab-manager-content');
+
+    if (!tabGenBtn || !tabManBtn || !genContent || !manContent) return;
+
+    tabGenBtn.onclick = () => {
+        tabGenBtn.classList.replace('text-on-surface-variant', 'text-primary');
+        tabManBtn.classList.replace('text-primary', 'text-on-surface-variant');
+        if (tabIndicator) {
+            tabIndicator.style.transform = 'translateX(100%)';
+            tabIndicator.style.left = '6px';
+        }
+        
+        genContent.classList.remove('opacity-0', 'pointer-events-none', 'z-0');
+        genContent.classList.add('opacity-100', 'z-10');
+        
+        manContent.classList.remove('opacity-100', 'z-10');
+        manContent.classList.add('opacity-0', 'pointer-events-none', 'z-0');
+    };
+    
+    tabManBtn.onclick = async () => {
+        // Require password to enter Manager Edits tab (Strictly Manager Role)
+        const unlocked = await requireAiUnlock({
+            requiredRole: 'manager',
+            title: currentLang === 'ar' ? 'وصول إداري آمن' : 'Secure Admin Access',
+            reason: currentLang === 'ar' ? 'أدخل كلمة السر للوصول إلى الإعدادات المتقدمة' : 'Enter password to access Advanced Settings',
+            icon: `<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>`
+        });
+        if (!unlocked) return;
+
+        managerSessionUnlocked = true; // Upgrade to persistent session
+        aiUnlocked = true; // Also unlock AI features globally for the session
+
+        tabManBtn.classList.replace('text-on-surface-variant', 'text-primary');
+        tabGenBtn.classList.replace('text-primary', 'text-on-surface-variant');
+        if (tabIndicator) {
+            tabIndicator.style.transform = 'translateX(0)';
+            tabIndicator.style.left = '6px';
+        }
+        
+        manContent.classList.remove('opacity-0', 'pointer-events-none', 'z-0');
+        manContent.classList.add('opacity-100', 'z-10');
+        
+        genContent.classList.remove('opacity-100', 'z-10');
+        genContent.classList.add('opacity-0', 'pointer-events-none', 'z-0');
+    };
+}
+
+// Add Project Logic
+const addProjectBtn = document.getElementById('add-project-btn');
+if (addProjectBtn) {
+    addProjectBtn.addEventListener('click', async () => {
+        const type = document.getElementById('new-project-type').value;
+        const code = document.getElementById('new-project-code').value.trim();
+        const name = document.getElementById('new-project-name').value.trim();
+
+        if (!code || !name) {
+            showToast(currentLang === 'ar' ? 'يرجى إدخال الكود والاسم' : 'Please enter code and name', {}, 3000);
+            return;
+        }
+
+        if (!/^\d+$/.test(code)) {
+            showToast(currentLang === 'ar' ? 'الكود يجب أن يكون أرقام فقط' : 'Code must be digits only', {}, 3000);
+            return;
+        }
+
+        try {
+            const success = await window.api.addProjectMapping(type === 'صادر' ? 'Sader' : 'Wared', code, name);
+            if (success) {
+                showToast(currentLang === 'ar' ? 'تمت إضافة المشروع بنجاح!' : 'Project added successfully!', {}, 4000);
+                document.getElementById('new-project-code').value = '';
+                document.getElementById('new-project-name').value = '';
+            } else {
+                showToast(currentLang === 'ar' ? 'خطأ في الحفظ' : 'Error saving mapping', {}, 4000);
+            }
+        } catch (e) {
+            console.error('Add mapping error:', e);
+            showToast('error_occurred', {}, 4000);
+        }
+    });
+}
+
+// Ensure tabs are initialized
+initSettingsTabs();
 

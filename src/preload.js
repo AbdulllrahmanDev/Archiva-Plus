@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('api', {
     reprocessDocument: (id, filePath) => ipcRenderer.invoke('reprocess-document', id, filePath),
     stopProcessing: (id) => ipcRenderer.invoke('stop-processing', id),
     setNativeTheme: (theme) => ipcRenderer.send('set-native-theme', theme),
+    getMappings: () => ipcRenderer.invoke('get-mappings'),
+
 
     // Auto-Analysis Toggle
     getAutoAnalysisStatus: () => ipcRenderer.invoke('get-auto-analysis-status'),
@@ -75,5 +77,6 @@ contextBridge.exposeInMainWorld('api', {
     checkForUpdatesManual: () => ipcRenderer.invoke('check-for-updates-manual'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     getFeaturesUnlockStatus: () => ipcRenderer.invoke('get-features-unlock-status'),
-    validateFeaturePassword: (password) => ipcRenderer.invoke('validate-feature-password', password)
+    validateFeaturePassword: (password) => ipcRenderer.invoke('validate-feature-password', password),
+    lockFeatures: () => ipcRenderer.invoke('lock-features')
 });

@@ -23,7 +23,7 @@ if (fs.existsSync(envPathEnc)) {
 // PROJECT CODE MAPPINGS (Sader/Outgoing & Wared/Incoming)
 // ============================================================
 
-const SADER_MAPPING = {
+let SADER_MAPPING = {
     "119": "احمد المرسي",
     "118": "ساج",
     "117": "عقود الخارج",
@@ -45,7 +45,7 @@ const SADER_MAPPING = {
     "112": "مشروعات وجه بحري",
 };
 
-const WARED_MAPPING = {
+let WARED_MAPPING = {
     "519": "احمد المرسي",
     "518": "ساج",
     "517": "عقود الخارج",
@@ -68,22 +68,57 @@ const WARED_MAPPING = {
 };
 
 function getProjectFolderName(code, name, mapping) {
-    // Always use 'Code Name' format
-    return `${code} ${name}`;
+    if (!name || name === "غير_محدد" || name === "عام") return name;
+    
+    // Count how many times this project name appears in the mapping
+    const occurrences = Object.values(mapping).filter(v => v === name).length;
+    
+    // If more than one code points to this name, include the code
+    if (occurrences > 1) {
+        return `${name} ${code}`;
+    }
+    
+    // Otherwise, just use the name
+    return name;
 }
 
 function parseArchivaCode(text) {
     if (!text) return { year: null, projectCode: null, docNum: null };
-    const match = text.match(/(\d{4})[/\-\.](\d{3})[/\-\.](\d+)/);
+    
+    // Remove all spaces to make parsing more robust
+    const cleanText = text.replace(/\s+/g, '');
+    
+    // Pattern 1: YYYY/CCC/NNN
+    let match = cleanText.match(/(\d{4})[/\-\.](\d{3})[/\-\.](\d+)/);
     if (match) {
         return { year: match[1], projectCode: match[2], docNum: match[3] };
     }
+    
+    // Pattern 2: CCC/YYYY/NNN
+    match = cleanText.match(/(\d{3})[/\-\.](\d{4})[/\-\.](\d+)/);
+    if (match) {
+        return { year: match[2], projectCode: match[1], docNum: match[3] };
+    }
+
+    // Pattern 3: Simple CCC/YYYY
+    match = cleanText.match(/(\d{3})[/\-\.](\d{4})/);
+    if (match) {
+        return { year: match[2], projectCode: match[1], docNum: null };
+    }
+
+    // Pattern 4: Simple YYYY/CCC
+    match = cleanText.match(/(\d{4})[/\-\.](\d{3})/);
+    if (match) {
+        return { year: match[1], projectCode: match[2], docNum: null };
+    }
+
     return { year: null, projectCode: null, docNum: null };
 }
 
 function sanitizeFolderName(name) {
     if (!name) return "غير_محدد";
-    return name.normalize("NFC").replace(/[<>:"/\\|?*]/g, "").trim() || "غير_محدد";
+    // Replace slashes with hyphens for readability, remove other illegal chars
+    return name.replace(/[/\\]/g, '-').replace(/[<>:"|?*]/g, '').trim() || "غير_محدد";
 }
 
 
@@ -98,7 +133,7 @@ if (!app.isPackaged) {
             /.*\.sqlite3/, 
             /.*\.db/, 
             /.*[/\\]archive[/\\]/, 
-            /.*[/\\]Archiva Data[/\\]/
+            /.*[/\\]Archiva Plus Data[/\\]/
         ],
         hardResetMethod: 'exit'
     });
@@ -153,7 +188,11 @@ let activeProcesses = new Set();
 let isForceStopped = false;
 
 function loadAutoAnalysisConfig() {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
+    const oldConfigPath = path.join(app.getPath('userData'), 'archiva-config.json');
+    const configPath = path.join(app.getPath('userData'), 'archiva-plus-config.json');
+    if (fs.existsSync(oldConfigPath) && !fs.existsSync(configPath)) {
+        try { fs.renameSync(oldConfigPath, configPath); } catch(e) {}
+    }
     let config = {};
     if (fs.existsSync(configPath)) {
         try {
@@ -163,10 +202,8 @@ function loadAutoAnalysisConfig() {
         }
     }
 
-    // By default, Auto-Analysis is disabled to save API credits
     autoAnalysisEnabled = config.autoAnalysisEnabled === true;
 
-    // If enabled but no activation timestamp yet, set one now (first-time bootstrap)
     if (autoAnalysisEnabled && !config.autoAnalysisActivatedAt) {
         config.autoAnalysisActivatedAt = new Date().toISOString();
         try {
@@ -177,9 +214,9 @@ function loadAutoAnalysisConfig() {
     }
 
     autoAnalysisActivatedAt = config.autoAnalysisActivatedAt || null;
-    pdfSplitEnabled = config.pdfSplitEnabled === true; // Default false to prevent automatic background splitting
-    smartProjectMatchingEnabled = config.smartProjectMatchingEnabled === true; // Default false
-    featuresUnlocked = config.featuresUnlocked === true; // Persist across updates
+    pdfSplitEnabled = config.pdfSplitEnabled === true; 
+    smartProjectMatchingEnabled = config.smartProjectMatchingEnabled === true; 
+    featuresUnlocked = config.featuresUnlocked === true; 
     console.log(`Auto-Analysis: ${autoAnalysisEnabled ? 'ENABLED' : 'DISABLED'}, ActivatedAt: ${autoAnalysisActivatedAt || 'N/A'}`);
     console.log(`PDF Splitting: ${pdfSplitEnabled ? 'ENABLED' : 'DISABLED'}`);
     console.log(`Smart Project Matching: ${smartProjectMatchingEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -187,7 +224,7 @@ function loadAutoAnalysisConfig() {
 }
 
 function saveConfig(updates) {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
+    const configPath = path.join(app.getPath('userData'), 'archiva-plus-config.json');
     let config = {};
     if (fs.existsSync(configPath)) {
         try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {}
@@ -201,10 +238,10 @@ function saveConfig(updates) {
 }
 
 function initStorage() {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
+    const configPath = path.join(app.getPath('userData'), 'archiva-plus-config.json');
     let savedPath = app.isPackaged 
-        ? path.join(app.getPath('documents'), 'Archiva Storage')
-        : path.join(__dirname, 'Archiva Data');
+        ? path.join(app.getPath('documents'), 'Archiva Plus Storage')
+        : path.join(__dirname, 'Archiva Plus Data');
     if (fs.existsSync(configPath)) {
         try {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -223,11 +260,16 @@ function initStorage() {
         db.close();
     }
 
-    db = new sqlite3.Database(path.join(watchFolder, 'archiva.db'), (err) => {
+    const oldDbPath = path.join(watchFolder, 'archiva.db');
+    const newDbPath = path.join(watchFolder, 'archiva-plus.db');
+    if (fs.existsSync(oldDbPath) && !fs.existsSync(newDbPath)) {
+        try { fs.copyFileSync(oldDbPath, newDbPath); } catch(e) {}
+    }
+
+    db = new sqlite3.Database(newDbPath, (err) => {
         if (err) console.error("Database open error:", err);
         else {
             db.serialize(() => {
-                // Create table if it doesn't exist
                 db.run(`
                     CREATE TABLE IF NOT EXISTS documents (
                         id TEXT PRIMARY KEY,
@@ -246,7 +288,6 @@ function initStorage() {
                         intel_card TEXT
                     )
                 `);
-                // Migration: safely add columns that may not exist in older DBs
                 const migrationCols = ['file TEXT', 'class TEXT', 'area TEXT', 'tags TEXT',
                                        'summary TEXT', 'content TEXT', 'sha256 TEXT',
                                        'status TEXT DEFAULT \'ready\'',
@@ -261,7 +302,6 @@ function initStorage() {
                     });
                 });
 
-                // Cleanup stuck processes: Reset 'processing' to 'ready' on startup
                 db.run("UPDATE documents SET status = 'ready' WHERE status = 'processing'", (err) => {
                     if (err) console.error("Startup cleanup error:", err);
                     else console.log("Startup: Reset stuck processing documents.");
@@ -282,7 +322,6 @@ function cleanupEmptyDirsSync(startDir, stopDir) {
             
             if (fs.existsSync(currDir) && fs.statSync(currDir).isDirectory()) {
                 const files = fs.readdirSync(currDir);
-                // Filter out hidden files like .DS_Store or empty strings if any
                 if (files.length === 0) {
                     fs.rmdirSync(currDir);
                     console.log(`Deleted empty directory: ${currDir}`);
@@ -380,7 +419,7 @@ function startBackend() {
 
     console.log(`Backend launched: ${executable}`);
 
-    console.log(`Node.js Database Path: ${path.join(watchFolder, 'archiva.db')}`);
+    console.log(`Node.js Database Path: ${path.join(watchFolder, 'archiva-plus.db')}`);
     
     let pythonBuffer = '';
     pythonProcess.stdout.on('data', (data) => {
@@ -751,8 +790,15 @@ ipcMain.handle('get-documents', async () => {
     });
 });
 
+ipcMain.handle('get-mappings', () => {
+    return {
+        sader: SADER_MAPPING,
+        wared: WARED_MAPPING
+    };
+});
+
 ipcMain.handle('update-document', async (event, id, fields) => {
-    const allowedFields = ['subject', 'project', 'doc_date', 'version_no', 'title', 'summary'];
+    const allowedFields = ['subject', 'project', 'doc_date', 'version_no', 'title', 'summary', 'type'];
     const updates = Object.entries(fields).filter(([k]) => allowedFields.includes(k));
     if (updates.length === 0) return { success: false, error: 'No valid fields' };
 
@@ -762,7 +808,17 @@ ipcMain.handle('update-document', async (event, id, fields) => {
             
             // Check if we need to reorganize
             let needsReorganize = false;
+            
+            // Auto-sync title with version_no if it changes
+            if (fields.version_no !== undefined && fields.version_no !== doc.version_no) {
+                // If it's a real code (not just empty or default), set title
+                if (fields.version_no && fields.version_no !== 'غير محدد') {
+                    fields.title = fields.version_no;
+                }
+            }
+
             if (fields.subject !== undefined && fields.subject !== doc.subject) needsReorganize = true;
+            if (fields.title !== undefined && fields.title !== doc.title) needsReorganize = true;
             if (fields.project !== undefined && fields.project !== doc.project) needsReorganize = true;
             if (fields.version_no !== undefined && fields.version_no !== doc.version_no) needsReorganize = true;
             if (fields.doc_date !== undefined && fields.doc_date !== doc.doc_date) {
@@ -806,7 +862,7 @@ ipcMain.handle('update-document', async (event, id, fields) => {
                                 }
                         } catch(e) { console.error("Error updating sidecar:", e); }
                         sendUpdateToRenderer();
-                        resolve({ success: true });
+                        resolve({ success: true, updatedDoc: updatedDoc });
                     }
                 });
             }
@@ -859,9 +915,17 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
             // Filename is now always the code (version_no)
             cleanSubject = versionNo.replace(/\//g, "-").replace(/\\/g, "-");
         } else {
+            const titleRaw = (docData.title || "").trim();
             const subjectRaw = (docData.subject || "").trim();
-            const unknownSubjects = ["", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة", "n/a", "unknown"];
-            cleanSubject = unknownSubjects.includes(subjectRaw.toLowerCase()) ? (path.parse(docData.file).name) : subjectRaw;
+            const unknownWords = ["", "غير محدد", "غير_محدد", "وثيقة_غير_معروفة", "n/a", "unknown", "doc", "document"];
+            
+            if (titleRaw && !unknownWords.includes(titleRaw.toLowerCase())) {
+                cleanSubject = titleRaw;
+            } else if (subjectRaw && !unknownWords.includes(subjectRaw.toLowerCase())) {
+                cleanSubject = subjectRaw;
+            } else {
+                cleanSubject = path.parse(docData.file).name;
+            }
         }
         
         const ext = path.extname(docData.file) || '.pdf';
@@ -886,17 +950,26 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
             }
 
             if (isSameDoc) {
+                // The file at targetPath IS our document — it was already moved previously.
+                // Just clean up the stale old reference if it still exists (don't delete without verifying).
                 if (docData.file_path !== targetPath && fs.existsSync(docData.file_path)) {
                     try {
-                        fs.unlinkSync(docData.file_path);
-                        const oldSc = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
-                        if (fs.existsSync(oldSc)) fs.unlinkSync(oldSc);
+                        // Safety check: make sure old file != target (different inodes)
+                        const oldStat = fs.statSync(docData.file_path);
+                        const newStat = fs.statSync(targetPath);
+                        if (oldStat.ino !== newStat.ino) {
+                            // Truly different files — delete the old stale copy
+                            fs.unlinkSync(docData.file_path);
+                            const oldSc = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
+                            if (fs.existsSync(oldSc)) fs.unlinkSync(oldSc);
+                        }
                         cleanupEmptyDirsSync(path.dirname(docData.file_path), watchFolder);
-                    } catch(e) {}
+                    } catch(e) { console.error('Cleanup error:', e); }
                 }
                 docData.file_path = targetPath;
                 docData.file = newFilename;
             } else {
+                // Different document at target path — use a unique suffix
                 const uniqueSuffix = Date.now() % 10000;
                 newFilename = `${cleanSubject}_${uniqueSuffix}${ext}`;
                 targetPath = path.join(targetDir, newFilename);
@@ -906,11 +979,25 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
         if (targetPath !== docData.file_path && fs.existsSync(docData.file_path)) {
             const oldDir = path.dirname(docData.file_path);
             try {
+                // Ensure target directory exists before moving
+                if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
                 fs.renameSync(docData.file_path, targetPath);
             } catch (moveErr) {
-                let msg = "فشل نقل الملف. تأكد أن الملف ليس مفتوحاً في برنامج آخر.";
-                if (moveErr.code === 'EBUSY') msg = "الملف قيد الاستخدام حالياً.";
-                return { success: false, error: msg };
+                // renameSync fails across different drives — fallback to copy+delete
+                if (moveErr.code === 'EXDEV') {
+                    try {
+                        fs.copyFileSync(docData.file_path, targetPath);
+                        fs.unlinkSync(docData.file_path);
+                    } catch(copyErr) {
+                        console.error('Cross-device copy failed:', copyErr);
+                        return { success: false, error: 'فشل نقل الملف عبر أقراص مختلفة.' };
+                    }
+                } else {
+                    let msg = 'فشل نقل الملف. تأكد أن الملف ليس مفتوحاً في برنامج آخر.';
+                    if (moveErr.code === 'EBUSY') msg = 'الملف قيد الاستخدام حالياً.';
+                    console.error('Move error:', moveErr);
+                    return { success: false, error: msg };
+                }
             }
 
             const oldSidecar = docData.file_path.replace(new RegExp(`\\${ext}$`), '.json');
@@ -920,7 +1007,7 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
                     if (process.platform === 'win32') require('child_process').execSync(`attrib -h "${oldSidecar}"`);
                     fs.renameSync(oldSidecar, newSidecar);
                     if (process.platform === 'win32') require('child_process').exec(`attrib +h "${newSidecar}"`, () => {});
-                } catch(e) {}
+                } catch(e) { console.error('Sidecar move error:', e); }
             }
             docData.file_path = targetPath;
             docData.file = newFilename;
@@ -954,7 +1041,7 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
                         mainWindow.webContents.send('status-update', { type: "status", msg: "status_idle", progress: 0 });
                     }
                     checkBatchProgress(docData.id);
-                    resolve({ success: !err, newPath: docData.file_path, newFile: docData.file });
+                    resolve({ success: !err, newPath: docData.file_path, newFile: docData.file, updatedDoc: docData });
                 }
             );
         });
@@ -1386,18 +1473,18 @@ ipcMain.handle('change-storage-folder', async () => {
     if (result.canceled || !result.filePaths.length) return { success: false };
 
     const newFolder = result.filePaths[0];
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
     
     try {
-        fs.writeFileSync(configPath, JSON.stringify({ watchFolder: newFolder }));
+        // Correctly save using saveConfig to maintain other settings and use the right filename
+        saveConfig({ watchFolder: newFolder });
         
-        if (pythonProcess) {
-            pythonProcess.kill();
-            pythonProcess = null;
-        }
-
+        killBackend();
+        
+        // Re-initialize storage to update the global watchFolder variable and DB connection
         initStorage();
+        // Restart backend with the new folder
         startBackend();
+        // Notify renderer
         sendUpdateToRenderer();
 
         return { success: true, folder: newFolder };
@@ -1484,7 +1571,7 @@ ipcMain.handle('import-folder', async (event, folderPath) => {
 // ============================================================
 
 ipcMain.handle('get-auto-analysis-status', async () => {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
+    const configPath = path.join(app.getPath('userData'), 'archiva-plus-config.json');
     if (fs.existsSync(configPath)) {
         try {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -1500,34 +1587,21 @@ ipcMain.handle('get-auto-analysis-status', async () => {
 });
 
 ipcMain.handle('toggle-auto-analysis', async (event, enabled) => {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
-    let config = {};
-    if (fs.existsSync(configPath)) {
-        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {}
-    }
-
-    config.autoAnalysisEnabled = enabled;
-    if (enabled) {
-        config.autoAnalysisActivatedAt = new Date().toISOString();
-    } else {
-        config.autoAnalysisActivatedAt = null;
-    }
-
-    try {
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        console.error('Error saving auto-analysis config:', e);
-        return { success: false, error: e.message };
-    }
+    const activatedAt = enabled ? new Date().toISOString() : null;
+    
+    saveConfig({ 
+        autoAnalysisEnabled: enabled,
+        autoAnalysisActivatedAt: activatedAt
+    });
 
     // Update in-memory state
     autoAnalysisEnabled = enabled;
-    autoAnalysisActivatedAt = config.autoAnalysisActivatedAt;
+    autoAnalysisActivatedAt = activatedAt;
 
     // Write sentinel files so watcher.py picks up the change WITHOUT a restart
-    writeSentinelFiles(enabled, config.autoAnalysisActivatedAt, pdfSplitEnabled);
+    writeSentinelFiles(enabled, activatedAt, pdfSplitEnabled);
     console.log(`Auto-Analysis toggled: ${enabled ? 'ENABLED' : 'DISABLED'} at ${autoAnalysisActivatedAt || 'N/A'}`);
-    return { success: true, enabled, activatedAt: config.autoAnalysisActivatedAt };
+    return { success: true, enabled, activatedAt };
 });
 
 ipcMain.handle('get-pdf-split-status', async () => {
@@ -1535,19 +1609,7 @@ ipcMain.handle('get-pdf-split-status', async () => {
 });
 
 ipcMain.handle('toggle-pdf-split', async (event, enabled) => {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
-    let config = {};
-    if (fs.existsSync(configPath)) {
-        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {}
-    }
-
-    config.pdfSplitEnabled = enabled;
-    try {
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        console.error('Error saving PDF split config:', e);
-        return { success: false, error: e.message };
-    }
+    saveConfig({ pdfSplitEnabled: enabled });
 
     pdfSplitEnabled = enabled;
     writeSentinelFiles(autoAnalysisEnabled, autoAnalysisActivatedAt, enabled);
@@ -1561,19 +1623,7 @@ ipcMain.handle('get-smart-project-status', async () => {
 });
 
 ipcMain.handle('toggle-smart-project', async (event, enabled) => {
-    const configPath = path.join(app.getPath('userData'), 'archiva-config.json');
-    let config = {};
-    if (fs.existsSync(configPath)) {
-        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {}
-    }
-
-    config.smartProjectMatchingEnabled = enabled;
-    try {
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        console.error('Error saving Smart Project config:', e);
-        return { success: false, error: e.message };
-    }
+    saveConfig({ smartProjectMatchingEnabled: enabled });
 
     smartProjectMatchingEnabled = enabled;
     writeSentinelFiles(autoAnalysisEnabled, autoAnalysisActivatedAt, pdfSplitEnabled, enabled);
@@ -1585,7 +1635,7 @@ ipcMain.handle('toggle-smart-project', async (event, enabled) => {
 function writeSentinelFiles(enabled, activatedAt, splitEnabled, smartMatchEnabled) {
     if (!watchFolder || !fs.existsSync(watchFolder)) return;
 
-    const sentinelDir = path.join(watchFolder, '.archiva');
+    const sentinelDir = path.join(watchFolder, '.archiva-plus');
     const enabledFile  = path.join(sentinelDir, 'auto_analysis_enabled');
     const tsFile       = path.join(sentinelDir, 'activation_timestamp');
     const splitFile    = path.join(sentinelDir, 'pdf_split_enabled');
@@ -1676,15 +1726,21 @@ ipcMain.handle('get-features-unlock-status', () => {
 });
 
 ipcMain.handle('validate-feature-password', (event, password) => {
-    // The password can be set in .env (development) or .env.enc (production)
-    const MASTER_PASSWORD = process.env.FEATURE_PASSWORD || "Archiva2026";
+    const AI_PASSWORD = process.env.AI_PASSWORD || "Archiva2026";
+    const MANAGER_PASSWORD = process.env.MANAGER_PASSWORD || "ArchivaPlus2026";
     
-    if (password === MASTER_PASSWORD) {
+    if (password === MANAGER_PASSWORD) {
         featuresUnlocked = true;
-        saveConfig({ featuresUnlocked: true });
-        return { success: true };
+        return { success: true, type: 'manager' };
+    } else if (password === AI_PASSWORD) {
+        return { success: true, type: 'ai' };
     }
     return { success: false };
+});
+
+ipcMain.handle('lock-features', () => {
+    featuresUnlocked = false;
+    return { success: true };
 });
 
 // Initialize on app start

@@ -1,6 +1,6 @@
 {
-  "name": "archiva",
-  "version": "1.0.0",
+  "name": "archiva-plus",
+  "version": "1.2.1",
   "description": "",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "view-env": "node scripts/view-env.js"
   },
   "build": {
-    "appId": "com.archiva.app",
+    "appId": "com.archiva.plus.app",
     "productName": "Archiva Plus",
     "directories": {
       "output": "dist"
@@ -19,7 +19,7 @@
       {
         "provider": "github",
         "owner": "AbdulllrahmanDev",
-        "repo": "Archiva"
+        "repo": "Archiva-Plus"
       }
     ],
     "win": {
@@ -41,9 +41,9 @@
       "runAfterFinish": true
     },
     "appx": {
-      "identityName": "Archiva",
-      "publisher": "CN=Archiva",
-      "publisherDisplayName": "Archiva"
+      "identityName": "ArchivaPlus",
+      "publisher": "CN=ArchivaPlus",
+      "publisherDisplayName": "Archiva Plus"
     },
     "asar": true,
     "compression": "maximum",

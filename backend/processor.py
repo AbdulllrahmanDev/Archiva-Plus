@@ -69,23 +69,51 @@ WARED_MAPPING = {
 
 # Identify projects with multiple codes to add the code to the folder name
 def _get_project_folder_name(code, name, mapping):
-    # Always use 'Code Name' format as requested
-    return f"{code} {name}"
+    if not name or name == "غير_محدد" or name == "عام":
+        return name
+        
+    # Count how many times this project name appears in the mapping
+    occurrences = list(mapping.values()).count(name)
+    
+    # If more than one code points to this name, include the code
+    if occurrences > 1:
+        return f"{name} {code}"
+        
+    # Otherwise, just use the name
+    return name
 
 def parse_archiva_code(text):
     """
-    Parses strings like '2026/103/111' or '2026-103-111'
-    Returns (year, project_code, doc_number) or (None, None, None)
+    Parses Archiva document codes in multiple formats:
+      - YYYY/CCC/NNN (e.g., 2026-103-458)
+      - CCC/YYYY/NNN (e.g., 103-2026-458)
+      - CCC/YYYY     (e.g., 103-2026)
+      - YYYY/CCC     (e.g., 2026-103)
+    Supports separators: /, -, _, ., and spaces.
+    Returns (year, project_code, doc_number) or (None, None, None).
     """
     if not text:
         return None, None, None
+
+    # Strip ALL whitespace first to handle random spacing
+    no_space = re.sub(r'\s+', '', text)
     
-    # Match patterns like 2026/103/111 or 2026-103-111 or 2026.103.111
-    pattern = r'(\d{4})[/\-\.](\d{3})[/\-\.](\d+)'
-    match = re.search(pattern, text)
-    if match:
-        return match.group(1), match.group(2), match.group(3)
+    # Pattern 1: YYYY/CCC/NNN
+    m = re.search(r'(\d{4})[/\-_\.](\d{3})[/\-_\.](\d+)', no_space)
+    if m: return m.group(1), m.group(2), m.group(3)
     
+    # Pattern 2: CCC/YYYY/NNN
+    m = re.search(r'(\d{3})[/\-_\.](\d{4})[/\-_\.](\d+)', no_space)
+    if m: return m.group(2), m.group(1), m.group(3)
+    
+    # Pattern 3: Simple CCC/YYYY
+    m = re.search(r'(\d{3})[/\-_\.](\d{4})', no_space)
+    if m: return m.group(2), m.group(1), None
+    
+    # Pattern 4: Simple YYYY/CCC
+    m = re.search(r'(\d{4})[/\-_\.](\d{3})', no_space)
+    if m: return m.group(1), m.group(2), None
+
     return None, None, None
 
 
@@ -268,7 +296,7 @@ def real_ai_analyze(text, filename, file_path=None):
       "governorate": "اسم المحافظة (أو 'غير محددة')",
       "doc_date": "YYYY-MM-DD",
       "version_no": "رقم الخطاب الأصلي",
-      "title": "عنوان قصير مناسب للملف",
+      "title": "عنوان قصير مناسب للملف (استخدم الرمز / للفصل بين أرقام الأكواد والسنوات)",
       "class": "نوع الوثيقة من القائمة التالية فقط: خطاب | تقرير | لوحة هندسية | محضر اجتماع | عقد | فاتورة | مواصفة فنية | مذكرة داخلية | موافقة | أخرى",
       "summary": "ملخص من سطر واحد",
       "intel_card": "موجز معلوماتي شامل (الموضوع، الجهة، التاريخ، الرقم)"
@@ -649,17 +677,31 @@ def mock_ai_analyze(text, filename):
     ext = os.path.splitext(filename)[1].lower()
     file_format = "PDF" if ext == ".pdf" else "IMAGE"
 
-    # Format filename into a readable title
     raw_name = os.path.splitext(filename)[0]
-    readable_title = raw_name.replace("_", " ").replace("-", " ").title()
+
+    # Check if filename IS an Archiva code (e.g. 2026-103-458)
+    year_code, proj_code, doc_num = parse_archiva_code(raw_name)
+    if year_code and proj_code and doc_num:
+        version_str = f"{year_code}/{proj_code}/{doc_num}"
+        readable_title = version_str
+        # Resolve project name from mappings so subject is meaningful
+        project_name = SADER_MAPPING.get(proj_code) or WARED_MAPPING.get(proj_code) or "غير_محدد"
+    else:
+        version_str = ""
+        # Human-readable fallback
+        if re.match(r'^\d+[-_ ]\d+[-_ ]\d+$', raw_name):
+            readable_title = re.sub(r'[-_]', '/', raw_name)
+        else:
+            readable_title = raw_name.replace("_", " ").replace("-", " ").title()
+        project_name = "غير_محدد"
 
     return {
         "title": readable_title,
-        "subject": readable_title,   # FIX: use readable title so file gets moved & renamed
-        "project": "غير_محدد",       # FIX: explicit fallback so organize_file_copy always has a project
+        "subject": readable_title,
+        "project": project_name,
         "governorate": "غير_محددة",
         "doc_date": "",
-        "version_no": "",
+        "version_no": version_str,
         "type": file_format,
         "class": "أخرى",
         "area": "",
@@ -674,7 +716,10 @@ def sanitize_folder_name(name):
         return "غير_محدد"
     # Normalize to NFC to prevent duplicate folders with different encoding
     name = unicodedata.normalize("NFC", str(name))
-    cleaned = re.sub(r'[<>:"/\\|?*]', "", name).strip()
+    # Replace slashes and backslashes with hyphens for readability in filenames
+    name = re.sub(r'[\\/]', "-", name)
+    # Remove other invalid characters
+    cleaned = re.sub(r'[<>:"|?*]', "", name).strip()
     return cleaned or "غير_محدد"
 
 
@@ -1046,6 +1091,14 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
                     flush=True,
                 )
                 ai_data = mock_ai_analyze(content, file_name)
+
+        # OVERRIDE FROM FILENAME IF IT HAS A CODE
+        raw_name = os.path.splitext(file_name)[0]
+        year_code, project_code, doc_num = parse_archiva_code(raw_name)
+        if year_code and project_code and doc_num:
+            extracted_code = f"{year_code}/{project_code}/{doc_num}"
+            print(f"Filename contains valid code: {extracted_code}. Overriding AI extracted version_no.", flush=True)
+            ai_data["version_no"] = extracted_code
 
         date_str = datetime.datetime.now().isoformat()
 

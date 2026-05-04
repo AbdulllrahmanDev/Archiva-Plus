@@ -30,7 +30,7 @@ _ENV_ACTIVATED_AT = os.environ.get('AUTO_ANALYSIS_ACTIVATED_AT', '')
 
 def _sentinel_dir():
     folder = _WATCH_FOLDER or os.getcwd()
-    return os.path.join(folder, '.archiva')
+    return os.path.join(folder, '.archiva-plus')
 
 def _read_sentinel_enabled():
     """Read live auto-analysis state from sentinel file."""
@@ -147,7 +147,7 @@ class ArchiveHandler(FileSystemEventHandler):
             auto_enabled = _read_sentinel_enabled()
             
             # Check for force_ai override (e.g. from "Analyze" button in UI)
-            sentinel_dir = os.path.join(self.folder_path, '.archiva')
+            sentinel_dir = os.path.join(self.folder_path, '.archiva-plus')
             force_ai_file = os.path.join(sentinel_dir, f'force_ai_{file_id}.tmp')
             force_ai = os.path.exists(force_ai_file)
 
@@ -160,6 +160,17 @@ class ArchiveHandler(FileSystemEventHandler):
                 skip_organize = False # الطلب اليدوي يعني أرشفة كاملة
                 try: os.remove(force_ai_file)
                 except: pass
+
+            # ── SMART OVERRIDE: إذا كان اسم الملف كوداً صحيحاً (مثل 2026-103-236)
+            # ننقله للمجلد الصحيح حتى لو كان التحليل التلقائي مغلقاً.
+            if skip_organize:
+                from processor import parse_archiva_code, SADER_MAPPING, WARED_MAPPING
+                _raw = os.path.splitext(os.path.basename(src_path))[0]
+                _y, _p, _n = parse_archiva_code(_raw)
+                if _y and _p and _n and (_p in SADER_MAPPING or _p in WARED_MAPPING):
+                    skip_organize = False
+                    skip_ai = True
+                    print(f"Watcher: Code-named file '{os.path.basename(src_path)}' -> organizing without AI.", flush=True)
 
             split_pdf = _read_sentinel_split_enabled()
             smart_match = _read_sentinel_smart_match_enabled()
@@ -188,17 +199,30 @@ class ArchiveHandler(FileSystemEventHandler):
         time.sleep(1)
         _processing_lock.add(dest_path)
         try:
-            skip_ai = not _read_sentinel_enabled()
-            
+            auto_enabled = _read_sentinel_enabled()
+            skip_ai = not auto_enabled
+            skip_organize = not auto_enabled
+
             file_name = os.path.basename(dest_path)
             normalized_name = unicodedata.normalize("NFC", file_name)
             file_id = hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:24]
-            sentinel_dir = os.path.join(self.folder_path, '.archiva')
+            sentinel_dir = os.path.join(self.folder_path, '.archiva-plus')
             force_ai_file = os.path.join(sentinel_dir, f'force_ai_{file_id}.tmp')
             if os.path.exists(force_ai_file):
                 skip_ai = False
+                skip_organize = False
                 try: os.remove(force_ai_file)
                 except: pass
+
+            # ── SMART OVERRIDE: code-named files are always organized even with auto-analysis off
+            if skip_organize:
+                from processor import parse_archiva_code, SADER_MAPPING, WARED_MAPPING
+                _raw = os.path.splitext(file_name)[0]
+                _y, _p, _n = parse_archiva_code(_raw)
+                if _y and _p and _n and (_p in SADER_MAPPING or _p in WARED_MAPPING):
+                    skip_organize = False
+                    skip_ai = True
+                    print(f"Watcher(moved): Code-named file '{file_name}' -> organizing without AI.", flush=True)
 
             split_pdf = _read_sentinel_split_enabled()
             smart_match = _read_sentinel_smart_match_enabled()
@@ -208,7 +232,7 @@ class ArchiveHandler(FileSystemEventHandler):
                 print(f"Skipping {file_name} because it was manually STOPPED.", flush=True)
                 return
 
-            process_file(dest_path, self.folder_path, skip_ai=skip_ai, split_pdf=split_pdf, smart_match=smart_match)
+            process_file(dest_path, self.folder_path, skip_ai=skip_ai, skip_organize=skip_organize, split_pdf=split_pdf, smart_match=smart_match)
         except Exception as e:
             print(f"Error processing {dest_path}: {e}", flush=True)
         finally:
@@ -224,7 +248,7 @@ def start_watching(folder_path):
     print(f"Service started. Watching: {folder_path}", flush=True)
 
     # Bootstrap sentinel files from ENV vars if not yet written by main.js
-    sentinel_dir = os.path.join(_WATCH_FOLDER, '.archiva')
+    sentinel_dir = os.path.join(_WATCH_FOLDER, '.archiva-plus')
     enabled_file = os.path.join(sentinel_dir, 'auto_analysis_enabled')
     ts_file      = os.path.join(sentinel_dir, 'activation_timestamp')
     if not os.path.exists(enabled_file):
@@ -302,7 +326,61 @@ def start_watching(folder_path):
         print(f"Cleanup complete: removed {orphans_removed} orphan sidecar(s).", flush=True)
     else:
         print("No orphan sidecars found.", flush=True)
-    
+
+    # ── Auto-Fix: Re-process files whose filename is a valid Archiva code
+    # but whose sidecar has project = "غير محدد" / "غير_محدد" (old bad data).
+    # This handles the migration case where files were archived before the
+    # filename-code detection was implemented.
+    print("Auto-Fix: Scanning for mis-classified code-named files...", flush=True)
+    from processor import parse_archiva_code, SADER_MAPPING, WARED_MAPPING
+    autofix_count = 0
+    for root, dirs, files in os.walk(folder_path):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for filename in files:
+            if not filename.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.webp')):
+                continue
+            raw_name = os.path.splitext(filename)[0]
+            year_c, proj_c, doc_n = parse_archiva_code(raw_name)
+            if not (year_c and proj_c and doc_n):
+                continue  # filename is NOT an Archiva code – skip
+
+            # Check if the mapping recognises this project code
+            if proj_c not in SADER_MAPPING and proj_c not in WARED_MAPPING:
+                continue
+
+            # Read the sidecar (if it exists)
+            sidecar_path = os.path.join(root, os.path.splitext(filename)[0] + '.json')
+            if os.path.exists(sidecar_path):
+                try:
+                    with open(sidecar_path, 'r', encoding='utf-8') as f:
+                        sc = json.load(f)
+                    stored_project = sc.get('project', '')
+                    # Only re-process if the project is clearly wrong/unset
+                    if stored_project not in ('غير محدد', 'غير_محدد', '', 'عام'):
+                        continue  # Already has a real project name – leave it
+                    # Bad data detected – delete sidecar so process_file re-runs
+                    os.remove(sidecar_path)
+                    print(f"Auto-Fix: Deleted bad sidecar for {filename} (project was '{stored_project}')", flush=True)
+                except Exception as e:
+                    print(f"Auto-Fix: Could not read sidecar for {filename}: {e}", flush=True)
+                    continue
+
+            file_path_fix = os.path.join(root, filename)
+            print(f"Auto-Fix: Re-processing {filename} -> code {year_c}/{proj_c}/{doc_n}", flush=True)
+            try:
+                split_pdf = _read_sentinel_split_enabled()
+                smart_match = _read_sentinel_smart_match_enabled()
+                process_file(file_path_fix, folder_path, skip_ai=True,
+                             force_reprocess=True, split_pdf=False, smart_match=smart_match)
+                autofix_count += 1
+            except Exception as e:
+                print(f"Auto-Fix Error for {filename}: {e}", flush=True)
+
+    if autofix_count:
+        print(f"Auto-Fix complete: fixed {autofix_count} mis-classified file(s).", flush=True)
+    else:
+        print("Auto-Fix: No mis-classified code-named files found.", flush=True)
+
     # Only scan for unprocessed files if auto-analysis is currently enabled
     if enabled_now:
         activation_ts = _read_sentinel_timestamp()
@@ -383,7 +461,7 @@ def import_external_folder(external_folder, main_archive_folder):
 
 if __name__ == '__main__':
     # Get folder path from argument or default
-    watch_folder = os.path.abspath(os.path.join(os.getcwd(), 'Archiva Data'))
+    watch_folder = os.path.abspath(os.path.join(os.getcwd(), 'Archiva Plus Data'))
     
     if len(sys.argv) > 1:
         if sys.argv[1] == '--import':
