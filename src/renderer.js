@@ -2748,20 +2748,45 @@ window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, 
             
             const doc = documents.find(d => d.id == docId);
             let vNo = doc.version_no || '';
-            if (vNo && vNo !== 'غير محدد') {
-                const re1 = /^(\d{4})([/\-\._])(\d+)([/\-\._])(\d+)$/;
-                const re2 = /^(\d+)([/\-\._])(\d{4})([/\-\._])(\d+)$/;
-                const re3 = /^(\d{4})([/\-\._])(\d+)$/;
-                const re4 = /^(\d+)([/\-\._])(\d{4})$/;
-                let m = vNo.match(re1);
-                if (m) {
-                    vNo = `${m[1]}${m[2]}${newValue.code}${m[4]}${m[5]}`;
-                } else if ((m = vNo.match(re2))) {
-                    vNo = `${newValue.code}${m[2]}${m[3]}${m[4]}${m[5]}`;
-                } else if ((m = vNo.match(re3))) {
-                    vNo = `${m[1]}${m[2]}${newValue.code}`;
-                } else if ((m = vNo.match(re4))) {
-                    vNo = `${newValue.code}${m[2]}${m[3]}`;
+            
+            // Auto-update version_no (middle number) logic
+            if (newValue.code) {
+                if (!vNo || vNo === '—' || vNo === 'غير محدد') {
+                    const year = new Date().getFullYear();
+                    vNo = `${year}/${newValue.code}/...`;
+                } else {
+                    // Split into parts while keeping delimiters
+                    const parts = vNo.split(/([/\-\._])/);
+                    const dataParts = parts.filter((_, i) => i % 2 === 0);
+                    const delimiters = parts.filter((_, i) => i % 2 !== 0);
+
+                    if (dataParts.length >= 3) {
+                        // Replace the middle part (index 1) with the new project code
+                        dataParts[1] = newValue.code;
+                        
+                        // Reconstruct the string
+                        let newVNo = "";
+                        for (let i = 0; i < dataParts.length; i++) {
+                            newVNo += dataParts[i];
+                            if (i < delimiters.length) newVNo += delimiters[i];
+                        }
+                        vNo = newVNo;
+                    } else if (dataParts.length === 2) {
+                        // Convert 2-part (e.g. 2026/235) to 3-part (2026/103/235)
+                        const sep = delimiters[0] || '/';
+                        const yearIdx = dataParts.findIndex(p => p.length === 4);
+                        if (yearIdx === 0) {
+                            // Year/Number -> Year/Code/Number
+                            vNo = `${dataParts[0]}${sep}${newValue.code}${sep}${dataParts[1]}`;
+                        } else {
+                            // Number/Year -> Number/Code/Year
+                            vNo = `${dataParts[0]}${sep}${newValue.code}${sep}${dataParts[1]}`;
+                        }
+                    } else if (dataParts.length === 1) {
+                        // Single part -> Year/Code/Number
+                        const year = new Date().getFullYear();
+                        vNo = `${year}/${newValue.code}/${dataParts[0]}`;
+                    }
                 }
                 updatePayload.version_no = vNo;
             }
@@ -2837,7 +2862,6 @@ window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, 
                     document.removeEventListener('click', inputEl._globalClickHandler);
                 }
 
-                // IMPORTANT: Refresh the whole sidebar to update button handlers and context menu data
                 selectDocument(docId, true);
 
                 // 3. إعادة تحديث العرض الرئيسي لضمان ترتيب البيانات أو البحث
@@ -2920,18 +2944,16 @@ if (window.api) {
         documents = newDocs;
         lastDocCount = newDocs.length;
 
-        // Refresh archive view only if we're already on it
         if (currentView === 'archive') {
             renderArchiveView(document.getElementById('global-search-input')?.value || '');
-            buildDynamicFilterMenu(); // Refresh dynamic filter chips with new data
+            buildDynamicFilterMenu(); 
         }
 
-        // Auto-refresh the detail rail if the active doc just finished processing
         if (activeDocId && currentView === 'archive') {
             const activeDoc = documents.find(d => d.id == activeDocId);
             const prevDoc = prevDocs.find(d => d.id == activeDocId);
             if (activeDoc && prevDoc && prevDoc.status === 'processing' && activeDoc.status !== 'processing') {
-                selectDocument(activeDocId, true); // soft update on finish
+                selectDocument(activeDocId, true);
             } else if (activeDoc && !prevDoc) {
                 selectDocument(activeDocId, true);
             }
