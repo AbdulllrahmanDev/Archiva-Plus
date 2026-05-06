@@ -112,6 +112,16 @@ class ArchiveHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         src_path = unicodedata.normalize('NFC', event.src_path)
+        
+        # 1. Skip system files, DB files, and temporary files
+        basename = os.path.basename(src_path)
+        if basename.startswith('.') or basename.startswith('~') or basename.endswith('.tmp'):
+            return
+        if basename.startswith('archiva-plus.db') or basename.startswith('archiva.db'):
+            return
+        if basename == 'archiva-plus.log':
+            return
+
         if not self._should_process(src_path):
             return
         self._mark_seen(src_path)
@@ -187,6 +197,15 @@ class ArchiveHandler(FileSystemEventHandler):
             return
         src_path  = unicodedata.normalize('NFC', event.src_path)
         dest_path = unicodedata.normalize('NFC', event.dest_path)
+
+        # 1. Skip system files, DB files, and temporary files
+        basename = os.path.basename(dest_path)
+        if basename.startswith('.') or basename.startswith('~') or basename.endswith('.tmp'):
+            return
+        if basename.startswith('archiva-plus.db') or basename.startswith('archiva.db'):
+            return
+        if basename == 'archiva-plus.log':
+            return
 
         src_abs  = os.path.abspath(src_path)
         src_base = os.path.abspath(self.folder_path)

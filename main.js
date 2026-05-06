@@ -298,6 +298,13 @@ function initStorage() {
     db = new sqlite3.Database(newDbPath, (err) => {
         if (err) console.error("Database open error:", err);
         else {
+            // Hide the DB files on Windows to keep the folder clean
+            if (process.platform === 'win32') {
+                const { exec } = require('child_process');
+                exec(`attrib +h "${newDbPath}"`, (err) => {});
+                exec(`attrib +h "${newDbPath}-shm"`, (err) => {});
+                exec(`attrib +h "${newDbPath}-wal"`, (err) => {});
+            }
             db.serialize(() => {
                 db.run(`
                     CREATE TABLE IF NOT EXISTS documents (

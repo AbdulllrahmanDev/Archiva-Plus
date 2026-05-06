@@ -20,8 +20,11 @@ def get_db_path():
     return DB_CONFIG["path"]
 
 def get_connection():
-    """Returns a new sqlite3 connection to the current database path."""
-    return sqlite3.connect(get_db_path())
+    """Returns a new sqlite3 connection to the current database path with WAL mode and timeout."""
+    conn = sqlite3.connect(get_db_path(), timeout=30.0)
+    # Enable WAL mode for better concurrency between Python and Electron
+    conn.execute('PRAGMA journal_mode=WAL')
+    return conn
 
 def hide_file(path):
     """Sets the hidden attribute on a file (Windows only)."""

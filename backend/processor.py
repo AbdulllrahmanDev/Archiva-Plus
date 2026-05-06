@@ -71,16 +71,83 @@ WARED_MAPPING = {
 def _get_project_folder_name(code, name, mapping):
     if not name or name == "غير_محدد" or name == "عام":
         return name
-        
-    # Count how many times this project name appears in the mapping
-    occurrences = list(mapping.values()).count(name)
+    
+    # Normalize mapping values for comparison
+    def normalize_name(n):
+        if not n: return ""
+        return n.replace(' ', '').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ة', 'ه')
+
+    target_norm = normalize_name(name)
+    occurrences = 0
+    for val in mapping.values():
+        if normalize_name(val) == target_norm:
+            occurrences += 1
     
     # If more than one code points to this name, include the code
     if occurrences > 1:
-        return f"{name} {code}"
+        return f"{code} {name}"
         
-    # Otherwise, just use the name
     return name
+
+def load_dynamic_mappings(output_folder):
+    """Load mappings from the sentinel file in the watch folder."""
+    global SADER_MAPPING, WARED_MAPPING
+    sentinel_dir = os.path.join(output_folder, '.archiva-plus')
+    mappings_file = os.path.join(sentinel_dir, 'mappings.json')
+    
+    if not os.path.exists(mappings_file):
+        return
+
+    try:
+        with open(mappings_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if 'sader' in data:
+                SADER_MAPPING = data['sader']
+            if 'wared' in data:
+                WARED_MAPPING = data['wared']
+            print(f"Backend: Loaded dynamic mappings from {mappings_file}", flush=True)
+    except Exception as e:
+        print(f"Backend: Error loading dynamic mappings: {e}", flush=True)
+
+def mock_ai_analyze(content, file_name):
+    """
+    Deterministic fallback for AI analysis.
+    Uses filename codes and project mappings to classify without an LLM.
+    """
+    raw_name = os.path.splitext(file_name)[0]
+    year, project_code, doc_num = parse_archiva_code(raw_name)
+    
+    # Default values
+    result = {
+        "subject": raw_name,
+        "project": "عام",
+        "doc_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+        "version_no": raw_name,
+        "title": raw_name,
+        "summary": "أرشفة يدوية بناءً على كود الملف.",
+        "type": "وارد",
+        "governorate": "غير_محددة",
+        "class": "أرشفة يدوية"
+    }
+
+    if year:
+        result["doc_date"] = f"{year}-01-01"
+
+    if project_code:
+        # Check Sader/Wared mappings
+        sader_name = SADER_MAPPING.get(project_code)
+        wared_name = WARED_MAPPING.get(project_code)
+        
+        if sader_name:
+            result["project"] = sader_name
+            result["type"] = "صادر"
+            result["version_no"] = f"{year}/{project_code}/{doc_num}" if year and doc_num else raw_name
+        elif wared_name:
+            result["project"] = wared_name
+            result["type"] = "وارد"
+            result["version_no"] = f"{year}/{project_code}/{doc_num}" if year and doc_num else raw_name
+            
+    return result
 
 def parse_archiva_code(text):
     """
@@ -871,9 +938,40 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
                 doc_type = "وارد"
                 project_name = _get_project_folder_name(project_code, WARED_MAPPING[project_code], WARED_MAPPING)
         
-        # If no code was found, try to use the project field from AI
+        # ── 2.5. REVERSE LOOKUP: If AI gave us a name but no code was found in filename
         if project_name == "عام" and doc_data.get("project") not in ("", "عام", "غير محدد", "غير_محدد"):
-            project_name = doc_data.get("project")
+            ai_proj = doc_data.get("project")
+            
+            # Function to normalize for lookup
+            def norm_for_lookup(s):
+                if not s: return ""
+                return s.replace(' ', '').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ة', 'ه')
+            
+            ai_norm = norm_for_lookup(ai_proj)
+            
+            # Check Sader Mappings
+            sader_matches = [c for c, n in SADER_MAPPING.items() if norm_for_lookup(n) == ai_norm]
+            # Check Wared Mappings
+            wared_matches = [c for c, n in WARED_MAPPING.items() if norm_for_lookup(n) == ai_norm]
+            
+            if sader_matches and not wared_matches:
+                doc_type = "صادر"
+                project_code = sader_matches[0]
+                project_name = _get_project_folder_name(project_code, SADER_MAPPING[project_code], SADER_MAPPING)
+            elif wared_matches and not sader_matches:
+                doc_type = "وارد"
+                project_code = wared_matches[0]
+                project_name = _get_project_folder_name(project_code, WARED_MAPPING[project_code], WARED_MAPPING)
+            elif sader_matches and wared_matches:
+                # Ambiguous: found in both (e.g. same project name for sader and wared)
+                # Default to Wared if not specified, or just use the AI name
+                doc_type = "وارد"
+                project_code = wared_matches[0]
+                project_name = _get_project_folder_name(project_code, WARED_MAPPING[project_code], WARED_MAPPING)
+            else:
+                # Truly a new or unknown project
+                project_name = ai_proj
+                doc_type = "غير_مصنف"
 
         doc_data["project"] = project_name # Ensure project name with code is saved to DB
 
@@ -938,6 +1036,18 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
     """
     file_path = os.path.abspath(file_path)
     output_folder = os.path.abspath(output_folder)
+    
+    # Refresh mappings before processing
+    load_dynamic_mappings(output_folder)
+
+    file_name = os.path.basename(file_path)
+    
+    # Pre-determine file_id as early as possible for reliable status reporting and sync_complete
+    if not doc_id:
+        normalized_name = unicodedata.normalize("NFC", file_name)
+        file_id = hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:24]
+    else:
+        file_id = doc_id
 
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in [".pdf", ".jpg", ".jpeg", ".png", ".webp"]:
@@ -971,18 +1081,8 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
             report_status("status_idle", 100, doc_id=recovered_id)
         return None
 
-    # 2. Check content fingerprint (SHA256) in Database (Deeper Skip)
     file_hash = get_file_hash(file_path)
     existing_doc = get_document_by_sha256(file_hash)
-    
-    # Pre-determine file_id for status reporting
-    if doc_id:
-        file_id = doc_id
-    elif existing_doc:
-        file_id = existing_doc.get("id")
-    else:
-        normalized_name = unicodedata.normalize("NFC", file_name)
-        file_id = hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:24]
 
     if not force_reprocess and existing_doc:
         # لا نتخطى الملف إذا كان موجوداً في مجلد "غير_محدد" بسبب فشل سابق في التحليل
@@ -1051,16 +1151,6 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
                 report_status("status_idle", 100)
                 return None # Finished processing parts
 
-    print(f"Processing: {file_path}", flush=True)
-
-    # 3. ID Resolution
-    if not doc_id:
-        # Unified ID generation using NFC normalization to match Electron
-        normalized_name = unicodedata.normalize("NFC", file_name)
-        file_id = hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:24]
-    else:
-        file_id = doc_id
-
     report_status("status_processing", 10, doc_id=file_id, extra={"file": file_name})
 
     try:
@@ -1072,7 +1162,7 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
         content = content or ""  # Ensure it's not None
 
         if skip_ai:
-            print(f"Auto-Analysis is OFF. Ingesting {file_name} instantly without AI.", flush=True)
+            print(f"Fast-Track: Ingesting {file_name} without AI.", flush=True)
             ai_data = mock_ai_analyze(content, file_name)
         else:
             report_status("status_ai", 80, doc_id=file_id)
