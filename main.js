@@ -205,6 +205,7 @@ function setupAppMenu() {
 const sqlite3 = require('sqlite3').verbose();
 
 let mainWindow;
+let splashWindow;
 let pythonProcess;
 let watchFolder;
 let db;
@@ -347,31 +348,21 @@ function initStorage() {
     });
 }
 
-function cleanupEmptyDirsSync(startDir, stopDir) {
-    try {
-        if (!startDir || !stopDir) return;
-        let currDir = path.resolve(startDir);
-        const baseDir = path.resolve(stopDir);
-        
-        while (currDir && currDir.length > 3) {
-            if (currDir === baseDir) break;
-            
-            if (fs.existsSync(currDir) && fs.statSync(currDir).isDirectory()) {
-                const files = fs.readdirSync(currDir);
-                if (files.length === 0) {
-                    fs.rmdirSync(currDir);
-                    console.log(`Deleted empty directory: ${currDir}`);
-                    currDir = path.dirname(currDir);
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
+function createSplash() {
+    splashWindow = new BrowserWindow({
+        width: 450,
+        height: 450,
+        transparent: true,
+        frame: false,
+        alwaysOnTop: true,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true
         }
-    } catch (e) {
-        console.error('Error cleaning up empty directory:', e);
-    }
+    });
+
+    splashWindow.loadFile(path.join(__dirname, 'src', 'splash.html'));
+    splashWindow.on('closed', () => (splashWindow = null));
 }
 
 function createWindow() {
@@ -379,7 +370,7 @@ function createWindow() {
         width: 1200,
         backgroundColor: '#ffffff',
         icon: path.join(__dirname, '.icon-ico', 'icon.ico'),
-        show: true,
+        show: false, // Don't show immediately
         webPreferences: {
             preload: path.join(__dirname, 'src', 'preload.js'),
             contextIsolation: true,
@@ -399,6 +390,10 @@ function createWindow() {
     // Primary: show when renderer sends web-ready
     ipcMain.once('web-ready', () => {
         if (mainWindow) {
+            if (splashWindow) {
+                splashWindow.close();
+                splashWindow = null;
+            }
             mainWindow.show();
             mainWindow.focus();
         }
@@ -407,6 +402,10 @@ function createWindow() {
     // Fallback: show window when it's ready to display (in case web-ready never fires)
     mainWindow.once('ready-to-show', () => {
         if (mainWindow && !mainWindow.isVisible()) {
+            if (splashWindow) {
+                splashWindow.close();
+                splashWindow = null;
+            }
             mainWindow.show();
             mainWindow.focus();
         }
