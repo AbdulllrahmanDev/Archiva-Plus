@@ -949,7 +949,7 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
         )
 
         # ── 2. تحديد النوع (صادر/وارد) واسم المشروع ─────────────────────────
-        doc_type = "غير_مصنف"
+        doc_type = "غير مصنف"
         project_name = "عام"
         code_found_in_mapping = False
         
@@ -964,7 +964,7 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
                 code_found_in_mapping = True
             else:
                 # كود موجود ولكن غير معروف في القائمة -> نضمن ذهابه لـ "عام"
-                doc_type = "غير_مصنف"
+                doc_type = "غير مصنف"
                 project_name = "عام"
                 code_found_in_mapping = True # نعتبره "مكتشف" لكي لا يأخذ القديم
         
@@ -1002,7 +1002,7 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
             else:
                 # Truly a new or unknown project
                 project_name = ai_proj
-                doc_type = "غير_مصنف"
+                doc_type = "غير مصنف"
 
         doc_data["project"] = project_name # Ensure project name with code is saved to DB
 

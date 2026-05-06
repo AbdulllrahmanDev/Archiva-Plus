@@ -981,10 +981,12 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
         const dateStr = docData.doc_date || docData.date_added || "";
         const year = yearCode || ((dateStr.includes('-') && dateStr.length >= 4) ? dateStr.split('-')[0] : new Date().getFullYear().toString());
         
-        let docType = "غير_مصنف";
+        let docType = "غير مصنف";
         let projectName = "عام";
+        let codeFound = false;
         
         if (projectCode) {
+            codeFound = true;
             if (SADER_MAPPING[projectCode]) {
                 docType = "صادر";
                 projectName = getProjectFolderName(projectCode, SADER_MAPPING[projectCode], SADER_MAPPING);
@@ -994,7 +996,7 @@ async function organizeFileAndSaveDb(docData, baseFolder) {
             }
         }
         
-        if (projectName === "عام" && docData.project && !["", "عام", "غير محدد", "غير_محدد"].includes(docData.project)) {
+        if (!codeFound && projectName === "عام" && docData.project && !["", "عام", "غير محدد", "غير_محدد"].includes(docData.project)) {
             projectName = docData.project;
         }
 
