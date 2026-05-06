@@ -777,6 +777,28 @@ def mock_ai_analyze(text, filename):
     }
 
 
+def cleanup_empty_dirs(start_dir, stop_dir):
+    """
+    Recursively delete empty parent directories up to stop_dir.
+    """
+    try:
+        if not start_dir or not stop_dir:
+            return
+        curr_dir = os.path.abspath(start_dir)
+        base_dir = os.path.abspath(stop_dir)
+        
+        while curr_dir and len(curr_dir) > 3:
+            if curr_dir == base_dir:
+                break
+            if os.path.isdir(curr_dir) and not os.listdir(curr_dir):
+                os.rmdir(curr_dir)
+                print(f"Deleted empty directory: {curr_dir}", flush=True)
+                curr_dir = os.path.dirname(curr_dir)
+            else:
+                break
+    except Exception as e:
+        print(f"Warning: Could not cleanup empty directory: {e}", flush=True)
+
 def sanitize_folder_name(name):
     """Removes invalid characters and normalizes Arabic text to NFC."""
     if not name:
@@ -929,17 +951,26 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
         # ── 2. تحديد النوع (صادر/وارد) واسم المشروع ─────────────────────────
         doc_type = "غير_مصنف"
         project_name = "عام"
+        code_found_in_mapping = False
         
         if project_code:
             if project_code in SADER_MAPPING:
                 doc_type = "صادر"
                 project_name = _get_project_folder_name(project_code, SADER_MAPPING[project_code], SADER_MAPPING)
+                code_found_in_mapping = True
             elif project_code in WARED_MAPPING:
                 doc_type = "وارد"
                 project_name = _get_project_folder_name(project_code, WARED_MAPPING[project_code], WARED_MAPPING)
+                code_found_in_mapping = True
+            else:
+                # كود موجود ولكن غير معروف في القائمة -> نضمن ذهابه لـ "عام"
+                doc_type = "غير_مصنف"
+                project_name = "عام"
+                code_found_in_mapping = True # نعتبره "مكتشف" لكي لا يأخذ القديم
         
         # ── 2.5. REVERSE LOOKUP: If AI gave us a name but no code was found in filename
-        if project_name == "عام" and doc_data.get("project") not in ("", "عام", "غير محدد", "غير_محدد"):
+        # نطبق هذا فقط إذا لم نجد كوداً صريحاً في اسم الملف
+        if not code_found_in_mapping and project_name == "عام" and doc_data.get("project") not in ("", "عام", "غير محدد", "غير_محدد"):
             ai_proj = doc_data.get("project")
             
             # Function to normalize for lookup
@@ -1017,8 +1048,18 @@ def organize_file_copy(doc_data, base_archive_path, smart_match=True):
         source_path = doc_data.get("file_path")
         if source_path and os.path.exists(source_path):
             if os.path.abspath(source_path) != os.path.abspath(target_file_path):
-                shutil.move(source_path, target_file_path)
-                cleanup_empty_dirs(os.path.dirname(source_path), base_archive_path)
+                # Retry loop to handle Windows file locking delays
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        shutil.move(source_path, target_file_path)
+                        cleanup_empty_dirs(os.path.dirname(source_path), base_archive_path)
+                        break
+                    except Exception as move_err:
+                        if attempt == max_retries - 1:
+                            print(f"Error organizing file after {max_retries} attempts: {move_err}", flush=True)
+                            return None
+                        time.sleep(0.5)
             return target_file_path
         
         return None
@@ -1310,6 +1351,8 @@ def process_file(file_path, output_folder, skip_ai=False, force_reprocess=False,
         sys.stderr.write(f"PROCESS_FILE ERROR: {str(e)}\n")
     finally:
         if "file_id" in locals():
+            # Brief pause to ensure FS changes are fully committed before UI refresh
+            time.sleep(0.5)
             print(
                 json.dumps(
                     {"type": "sync_complete", "doc_id": file_id}, ensure_ascii=False

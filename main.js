@@ -348,6 +348,33 @@ function initStorage() {
     });
 }
 
+function cleanupEmptyDirsSync(startDir, stopDir) {
+    try {
+        if (!startDir || !stopDir) return;
+        let currDir = path.resolve(startDir);
+        const baseDir = path.resolve(stopDir);
+        
+        while (currDir && currDir.length > 3) {
+            if (currDir === baseDir) break;
+            
+            if (fs.existsSync(currDir) && fs.statSync(currDir).isDirectory()) {
+                const files = fs.readdirSync(currDir);
+                if (files.length === 0) {
+                    fs.rmdirSync(currDir);
+                    console.log(`Deleted empty directory: ${currDir}`);
+                    currDir = path.dirname(currDir);
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    } catch (e) {
+        console.error('Error cleaning up empty directory:', e);
+    }
+}
+
 function createSplash() {
     splashWindow = new BrowserWindow({
         width: 450,
