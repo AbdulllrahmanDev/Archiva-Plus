@@ -1,0 +1,4223 @@
+// Archiva Plus | Digital Curator - Renderer Engine
+console.log("Archiva Plus Renderer Engine Loaded - Update UI Active");
+const viewport = document.getElementById('app-viewport');
+const insightRail = document.getElementById('insight-rail');
+const railContent = document.getElementById('rail-content');
+const pipelineVisualizer = document.getElementById('pipeline-visualizer');
+
+let documents = [];
+let pendingFiles = [];
+let forceAiForNextUpload = false;
+let manualSplitForNextUpload = false;
+let currentView = localStorage.getItem('archiva-last-view') || 'add';
+let archiveLayout = 'grid';
+let isSelectionMode = false;
+let selectedDocIds = new Set();
+let activeFilters = { type: [], class: [], year: [], project: [], recency: false };
+
+let viewsInitialized = false;
+let activeDocId = null;
+let _autoAnalysisEnabled = false;
+let _pdfSplitEnabled = false;
+let _smartProjectEnabled = false;
+let chatHistory = [];
+let pendingAttachments = [];
+let historyStack = [];
+const MAX_HISTORY = 50;
+
+// ============================================================
+// AI SESSION LOCK — resets on every app start and every lock
+// ============================================================
+let aiUnlocked = false; // Always starts locked
+
+async function requireAiUnlock(options = {}) {
+    // If it's a string, it's just the reason (backwards compatibility)
+    const config = typeof options === 'string' ? { reason: options } : options;
+
+    if (aiUnlocked) return true;
+
+    const reasonText = config.reason || (currentLang === 'ar' ? 'أدخل كلمة السر لتفعيل وظائف الذكاء الاصطناعي في هذه الجلسة' : 'Enter the password to enable AI features for this session');
+    const titleText = config.title || (currentLang === 'ar' ? 'تفعيل الذكاء الاصطناعي' : 'Unlock AI Features');
+    const iconSvg = config.icon || `<path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5 5.5-2.5-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/>`;
+
+    return new Promise((resolve) => {
+        // Build modal overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'ai-unlock-overlay';
+        overlay.className = 'fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm';
+        overlay.innerHTML = `
+            <div class="relative w-[360px] bg-surface-container rounded-[2rem] p-8 shadow-2xl border border-outline-variant/20 flex flex-col gap-6 animate-[fadeSlideIn_0.25s_ease]">
+                <div class="flex flex-col items-center gap-3">
+                    <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                        <svg viewBox="0 0 24 24" class="w-7 h-7 fill-current">${iconSvg}</svg>
+                    </div>
+                    <h2 class="text-lg font-black text-on-surface text-center">${titleText}</h2>
+                    <p class="text-xs text-on-surface-variant/60 text-center font-bold">${reasonText}</p>
+                </div>
+                <div class="relative">
+                    <input id="ai-pwd-input" type="password" autocomplete="current-password" placeholder="${currentLang === 'ar' ? 'كلمة السر...' : 'Password...'}" 
+                        class="w-full bg-surface-container-highest text-sm font-bold text-on-surface outline-none border border-outline-variant/20 rounded-xl px-4 py-3 focus:border-primary/60 transition-all placeholder:text-on-surface-variant/30 text-center tracking-[0.25em]">
+                    <p id="ai-pwd-error" class="hidden text-[10px] text-error font-black text-center mt-2"></p>
+                </div>
+                <div class="flex gap-3">
+                    <button id="ai-pwd-cancel" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest border border-outline-variant/20 rounded-xl hover:bg-surface-container-high transition-all text-on-surface-variant">${currentLang === 'ar' ? 'إلغاء' : 'Cancel'}</button>
+                    <button id="ai-pwd-confirm" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest bg-primary text-white rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-primary/20">${currentLang === 'ar' ? 'تفعيل' : 'Unlock'}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const input = overlay.querySelector('#ai-pwd-input');
+        const error = overlay.querySelector('#ai-pwd-error');
+        const confirmBtn = overlay.querySelector('#ai-pwd-confirm');
+        const cancelBtn = overlay.querySelector('#ai-pwd-cancel');
+
+        input.focus();
+
+        const handleAttempt = async () => {
+            const password = input.value.trim();
+            if (!password) return;
+
+            confirmBtn.disabled = true;
+            confirmBtn.innerText = '...';
+            error.classList.add('hidden');
+
+            try {
+                const result = await window.api.validateFeaturePassword(password);
+                if (result.success) {
+                    aiUnlocked = true;
+                    overlay.remove();
+                    resolve(true);
+                } else {
+                    error.innerText = currentLang === 'ar' ? 'كلمة السر غير صحيحة' : 'Incorrect password';
+                    error.classList.remove('hidden');
+                    input.classList.add('animate-shake');
+                    setTimeout(() => input.classList.remove('animate-shake'), 500);
+                }
+            } catch (e) {
+                console.error('Password validation error:', e);
+            } finally {
+                confirmBtn.disabled = false;
+                confirmBtn.innerText = currentLang === 'ar' ? 'تفعيل' : 'Unlock';
+            }
+        };
+
+        confirmBtn.onclick = handleAttempt;
+        input.onkeydown = (e) => { if (e.key === 'Enter') handleAttempt(); };
+        cancelBtn.onclick = () => { overlay.remove(); resolve(false); };
+    });
+}
+
+
+const SVG_ICONS = {
+    add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+    search: 'M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+    archive: 'M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM6.24 5h11.52l.83 1H5.41l.83-1zM5 19V8h14v11H5zm11-5.5l-4 4-4-4 1.41-1.41L11 13.67V10h2v3.67l1.59-1.59L16 13.5z',
+    list: 'M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2v-2H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z',
+    grid_view: 'M4 11h5V5H4v6zm0 7h5v-6H4v6zm7 0h5v-6h-5v6zm0-13v6h5V5h-5z',
+    verified: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
+    close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    tune: 'M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z',
+    restart_alt: 'M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-2.97 2.17-5.43 5-5.91V5.07c-3.95.49-7 3.85-7 7.93 0 4.42 3.58 8 8 8v-3c-3.31 0-6-2.69-6-6z',
+    arrow_back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
+    arrow_outward: 'M6 6v2h8.59L5 17.59 6.41 19 16 9.41V18h2V6z',
+    auto_awesome: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5 5.5-2.5-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
+    cloud_upload: 'M19.35 10.04A7.49 7.49 0 0012 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 000 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z',
+    arrow_right_alt: 'M16.01 11H4v2h12.01v3L20 12l-3.99-4z',
+    pdf: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zm-4 4.1h1.1c.5 0 .9.4.9.9s-.4.9-.9.9H9v1.6H7.8v-5h2.3c.5 0 .9.4.9.9s-.4.9-.9.9H9v.8zm4.3.9c0 .5-.4.9-.9.9h-1.1v-3.4h1.1c.5 0 .9.4.9.9v1.6zm-1.1-.1v-1.2h-.1v1.2h.1zm4.8-.8h-1.3v.7h1.1v.9h-1.1v1.8h-1.2v-5h2.5v.9z',
+    image: 'M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z',
+    description: 'M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z',
+    add_comment: 'M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2zm0 14H4V4h16v12zm-2-7h-5v5h-2V9H6V7h5V2h2v5h5v2z',
+    edit_note: 'M3 10h11v2H3v-2zm0-2h11V6H3v2zm0 8h7v-2H3v2zm15.01-3.13l.71-.71c.39-.39 1.02-.39 1.41 0l.71.71c.39.39.39 1.02 0 1.41l-.71.71-2.12-2.12zm-.71.71L12 18.25V21h2.75l5.3-5.3-2.75-2.75z',
+    edit_square: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
+    delete: 'M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1z',
+    history: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z',
+    settings: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z',
+    light_mode: 'M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 0 0-1.41 0 .996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.42 0s.39-1.03 0-1.42L5.99 4.58zm12.37 12.37a.996.996 0 0 0-1.41 0 .996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.42 0s.39-1.03 0-1.42l-1.06-1.06zm1.06-12.37a.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.42s1.03.39 1.42 0l1.06-1.06c.39-.39.39-1.03 0-1.42zm-12.37 12.37a.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.42s1.03.39 1.42 0l1.06-1.06c.39-.39.39-1.03 0-1.42z',
+    dark_mode: 'M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z',
+    content_copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
+    check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+    folder_managed: 'M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 10H6v-2h12v2zm0-4H6v-2h12v2z',
+    task_alt: 'M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z',
+    sync: 'M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z',
+    category: 'M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.87L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5zM3 21.5h8v-8H3v8zm2-6h4v4H5v-4z',
+    label: 'M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16zM16 17H5V7h11l3.55 5L16 17z',
+    calendar_today: 'M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13z',
+    folder: 'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z'
+};
+
+function getIcon(name, classes = "") {
+    const path = SVG_ICONS[name] || SVG_ICONS['description'];
+    return `<svg class="icon-svg ${classes}" viewBox="0 0 24 24"><path d="${path}"/></svg>`;
+}
+
+function escPath(p) {
+    if (!p) return "";
+    return p.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function copyToClipboard(text, btnElement) {
+    navigator.clipboard.writeText(text).then(() => {
+        const originalHTML = btnElement.innerHTML;
+
+        btnElement.classList.add('text-on-surface');
+        btnElement.classList.remove('text-primary/40', 'hover:text-primary');
+        btnElement.innerHTML = getIcon('check', 'xs');
+
+        setTimeout(() => {
+            btnElement.classList.remove('text-on-surface');
+            btnElement.classList.add('text-primary/40', 'hover:text-primary');
+            btnElement.innerHTML = originalHTML;
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy: ', err);
+    });
+}
+
+function showToast(key, data = {}, duration = 3000) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    // Remove existing toasts to prevent stacking as per user request
+    container.innerHTML = '';
+
+    const toast = document.createElement('div');
+    // Added text-center for alignment
+    toast.className = 'px-8 py-4 bg-on-surface text-background rounded-2xl shadow-2xl text-xs font-bold uppercase tracking-wider animate-scale-up border border-white/5 text-center';
+    toast.innerText = t(key, data);
+
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'scale(0.9) translateY(-10px)';
+        toast.style.transition = 'all 0.5s ease';
+        setTimeout(() => toast.remove(), 500);
+    }, duration);
+}
+
+const i18n = {
+    en: {
+        nav_add: "Add Document", nav_library: "Library", nav_ai: "AI Intelligence",
+        hero_title: "Archive", hero_desc: "Upload your documents and images for deep intelligence analysis.",
+        ready_analysis: "Ready for Analysis", staged_archival: "Staged for Archival",
+        confirm_archival: "Confirm Archival", clear_list: "Clear List", remove: "REMOVE",
+        intel_library: "Intelligence Library", archive: "Library", list: "List", grid: "Curator Grid",
+        insights_dashboard: "Insights Dashboard", global_assets: "Global Assets", status: "Status", live_engine: "Live Engine",
+        back_to_insights: "Back to Insights", back_to_search: "Back to Search",
+        intel_summary: "Intelligence Summary", open_file: "Open File", open_folder: "Open Folder", export: "Export",
+        recent_files: "Recent Files",
+        last_analyzed: "Last Analyzed", action_control: "Action Control",
+        search_placeholder: "Search library...", doc_class: "Document Class",
+        reset_all: "Reset All", done: "Done", quick_filters: "Quick Filters:", pdf_only: "PDF Only", images_only: "Images Only",
+        search_analytics: "Search Analytics", keyword_density: "Keyword Density", primary_cluster: "Primary Content Cluster",
+        scanning: "Scanning Library...", found_assets: "Found {count} relevant assets",
+        enter_term: "Enter a term to begin", analyzed: "Analyzed", system_idle: "System Idle",
+        archiving_msg: "Archiving {count} documents...", staged_msg: "Files staged. Processing in background...", exported_msg: "Exported successfully",
+        archive_empty: "Archive is empty.", asset_intel: "Asset Intelligence", archived: "Archived",
+        ai_engine: "Intelligence Engine", ai_status: "Systems Operational", ai_desc: "Archiva Plus AI is scanning your documents for deep pattern recognition.",
+        archived_title: "Archive",
+        ai_welcome: "Hello. I am the Archiva Plus Intelligence Engine. I can analyze your documents, extract insights, and answer questions. Upload an image or type a message to begin.",
+        chat_placeholder: "Ask anything or attach a document...",
+        new_chat: "New Chat",
+        chat_reset: "Conversation reset successfully",
+        ai_welcome_title: "Back at it",
+        delete_confirm: "Are you sure you want to delete this document?",
+        clear_confirm: "Are you sure you want to PERMANENTLY clear the entire archive?",
+        delete_success: "Deleted successfully",
+        archive_cleared: "Archive cleared",
+        settings_title: "Settings",
+        settings_subtitle: "System Configuration",
+        filter_title: "Advanced Search Filters",
+        filter_search_placeholder: "Search in filters...",
+        filter_items_suffix: "Items",
+        filter_type: "Document Type",
+        filter_class: "Document Classification",
+        filter_year: "Year",
+        filter_project: "Project",
+        tab_general: "General Settings",
+        tab_advanced: "Advanced Tools",
+        theme_label: "Appearance",
+        light_theme: "Light",
+        dark_theme: "Dark",
+        language_label: "Language",
+        delete_selected: "Delete Selected",
+        cancel: "Cancel",
+        confirm_title: "Confirm Action",
+        confirm_btn: "Confirm",
+        storage_label: "Storage Location",
+        storage_change: "Change Folder",
+        storage_updated: "Storage location updated",
+        status_extracting: "Extracting document content...",
+        status_ocr: "Running OCR scanning...",
+        status_ai: "AI Engine analyzing context...",
+        status_organizing: "Organizing library structure...",
+        status_saving: "Finalizing archival...",
+        status_idle: "System Ready",
+        status_processing: "Processing: {file}",
+        status_error: "Analysis failed. Using manual values.",
+        status_fail: "System error during processing.",
+        re_analyze_title: "AI Analysis",
+        re_analyze_msg: "Do you want to re-analyze this document using Archiva Plus Intelligence?",
+        today: "Today",
+        yesterday: "Yesterday",
+        this_week: "Last 7 Days",
+        this_month: "Earlier this Month",
+        older: "Older",
+        auto_analysis_label: "Auto Analysis",
+        auto_analysis_desc: "Automatically analyze new files with AI",
+        auto_analysis_on: "Active — monitoring new files",
+        auto_analysis_off: "Inactive — files not being analyzed",
+        auto_analysis_enabled_toast: "Auto-Analysis enabled. Monitoring new files.",
+        auto_analysis_disabled_toast: "Auto-Analysis disabled.",
+        activated_since: "Active since:",
+        file_path: "File Path",
+        copied: "Copied!",
+        copy_path: "Copy Path",
+        pdf_split_label: "Split Multi-Project PDFs",
+        pdf_split_desc: "Automatically split PDFs containing multiple documents",
+        pdf_split_enabled_toast: "PDF Splitting enabled.",
+        pdf_split_disabled_toast: "PDF Splitting disabled.",
+        step_upload: "Upload",
+        step_split: "PDF Splitting",
+        step_analyze: "AI Analysis",
+        step_organize: "Organize",
+        step_ready: "Ready",
+        stop_analysis: "Stop Analysis",
+        smart_project_label: "Smart Project Matching (Maintenance)",
+        smart_project_desc: "This feature is currently under maintenance and cannot be enabled.",
+        smart_project_enabled_toast: "Smart Project Matching enabled.",
+        smart_project_disabled_toast: "Smart Project Matching disabled.",
+        similarity_title: "Project Similarity Match",
+        use_similar_btn: "Use Existing Folder",
+        create_new_btn: "Create New",
+        update_title: "Software Update",
+        update_available_msg: "A new version of Archiva Plus is being downloaded in the background.",
+        update_downloaded_msg: "The update is ready. Install now to enjoy the latest features?",
+        update_later: "Later",
+        update_now: "Update Now",
+        downloading: "Downloading Update...",
+        update_success: "Update installed successfully.",
+        latest_status: "Latest",
+        update_avail_status: "Update Available",
+        version_comparison: "v{current} → v{new}",
+        password_title: "Secure Access",
+        password_message: "Please enter the password to unlock these features.",
+        unlock_btn: "Unlock Features",
+        wrong_password: "Incorrect Password",
+        open_in_system: "Open in System",
+        access_granted: "Access Granted: Premium features unlocked.",
+        access_denied: "Access Denied: Incorrect password.",
+        manager_tab_title: "Add New Project",
+        manager_tab_desc: "Enter details for the new project to add it to the system list",
+        new_project_type_label: "Project Type",
+        new_project_code_label: "Project Code (e.g., 103)",
+        new_project_name_label: "Project Name",
+        new_project_code_placeholder: "Enter code...",
+        new_project_name_placeholder: "Enter name...",
+        add_project_btn_text: "Add Project",
+        registered_projects: "Registered Projects",
+        type_sader: "Outgoing",
+        type_wared: "Incoming"
+    },
+    ar: {
+        nav_add: "إضافة ملف", nav_library: "الأرشيف", nav_ai: "ذكاء اصطناعي",
+        hero_title: "أرشفة", hero_desc: "قم برفع مستنداتك وصورك لبدء تحليل الملفات وتنظيمها.",
+        ready_analysis: "جاهز للتحليل", staged_archival: "مدرج للأرشفة",
+        confirm_archival: "تأكيد الأرشفة", clear_list: "مسح القائمة", remove: "حذف",
+        intel_library: "أرشيف المحتوى", archive: "الأرشيف", list: "قائمة", grid: "شبكة",
+        insights_dashboard: "لوحة التفاصيل", global_assets: "إجمالي الملفات", status: "الحالة", live_engine: "محرك مباشر",
+        back_to_insights: "العودة", back_to_search: "العودة",
+        intel_summary: "ملخص المحتوى", open_file: "فتح الملف", open_folder: "فتح المجلد", export: "تصدير",
+        recent_files: "أحدث الملفات",
+        last_analyzed: "آخر تحليل", action_control: "التحكم",
+        search_placeholder: "ابحث في الأرشيف...", doc_class: "تصنيف المستند",
+        reset_all: "إعادة تعيين", done: "تم", quick_filters: "فلاتر سريعة:", pdf_only: "PDF فقط", images_only: "صور فقط",
+        search_analytics: "تحليلات البحث", keyword_density: "كثافة الكلمات", primary_cluster: "المجموعة الأساسية",
+        scanning: "جاري الفحص...", found_assets: "تم العثور على {count} من الأصول",
+        enter_term: "أدخل كلمة للبحث", analyzed: "تم التحليل", system_idle: "نظام مستعد",
+        archiving_msg: "أرشفة {count} مستندات...", staged_msg: "تم الإرسال.", exported_msg: "تم التصدير بنجاح",
+        archive_empty: "الأرشيف فارغ.", asset_intel: "الملفات المؤرشفة", archived: "تمت الأرشفة",
+        ai_engine: "محرك الذكاء", ai_status: "الأنظمة تعمل", ai_desc: "يقوم نظام Archiva Plus AI بفحص مستنداتك للتعرف على الأنماط العميقة.",
+        archived_title: "مؤرشف",
+        ai_welcome: "مرحباً. أنا محرك الذكاء الخاص بـ Archiva Plus. يمكنني تحليل مستنداتك واستخراج الرؤى والإجابة على أسئلتك. أرفق صورة أو اكتب رسالة للبدء.",
+        chat_placeholder: "اسأل عن أي شيء أو أرفق مستنداً...",
+        new_chat: "محادثة جديدة",
+        chat_reset: "تمت إعادة تعيين المحادثة",
+        ai_welcome_title: "كيف يمكنني مساعدتك؟",
+        delete_confirm: "هل أنت متأكد من حذف هذا المستند؟",
+        clear_confirm: "هل أنت متأكد من مسح الأرشيف بالكامل نهائياً؟",
+        delete_success: "تم الحذف بنجاح",
+        archive_cleared: "تم مسح الأرشيف",
+        settings_title: "الإعدادات",
+        settings_subtitle: "تكوين النظام",
+        filter_title: "فلاتر البحث المتقدمة",
+        filter_search_placeholder: "ابحث في الفلاتر...",
+        filter_items_suffix: "عناصر",
+        filter_type: "نوع الوثيقة",
+        filter_class: "تصنيف الوثيقة",
+        filter_year: "السنة",
+        filter_project: "المشروع",
+        tab_general: "الإعدادات العامة",
+        tab_advanced: "الإعدادات المتقدمة",
+        theme_label: "المظهر",
+        light_theme: "فاتح",
+        dark_theme: "غامق",
+        language_label: "اللغة",
+        delete_selected: "حذف المحدد",
+        cancel: "إلغاء",
+        confirm_title: "تأكيد الإجراء",
+        confirm_btn: "تأكيد",
+        storage_label: "مجلد التخزين",
+        storage_change: "تغيير المجلد",
+        storage_updated: "تم تحديث موقع التخزين",
+        status_extracting: "جاري استخراج محتوى المستند...",
+        status_ocr: "جاري إجراء الفحص الضوئي للمستند...",
+        status_ai: "الذكاء الاصطناعي يقوم بتحليل السياق...",
+        status_organizing: "جاري تنظيم هيكل الأرشيف...",
+        status_saving: "جاري اللمسات الأخيرة للأرشفة...",
+        status_idle: "تم الانتهاء من المعالجة",
+        status_processing: "جاري معالجة: {file}",
+        status_error: "فشل التحليل. تم استخدام بيانات افتراضية.",
+        status_fail: "حدث خطأ في النظام أثناء المعالجة.",
+        re_analyze_title: "تحليل الذكاء",
+        re_analyze_msg: "هل تريد إعادة تحليل هذا المستند باستخدام ذكاء Archiva Plus آلياً؟",
+        today: "اليوم",
+        yesterday: "أمس",
+        step_upload: "رفع الملف",
+        step_split: "فصل الملفات",
+        step_analyze: "التحليل الذكي",
+        step_organize: "التنظيم",
+        step_ready: "جاهز",
+        this_week: "آخر 7 أيام",
+        this_month: "في وقت سابق من هذا الشهر",
+        older: "قديم جداً",
+        auto_analysis_label: "التحليل التلقائي",
+        auto_analysis_desc: "تحليل الملفات الجديدة تلقائياً بالذكاء الاصطناعي",
+        auto_analysis_on: "نشط — يراقب الملفات الجديدة",
+        auto_analysis_off: "متوقف — لن يتم تحليل الملفات",
+        auto_analysis_enabled_toast: "تم تفعيل التحليل التلقائي. يراقب الملفات الجديدة الآن.",
+        auto_analysis_disabled_toast: "تم إيقاف التحليل التلقائي.",
+        activated_since: "نشط منذ:",
+        file_path: "مسار الملف",
+        copied: "تم النسخ!",
+        copy_path: "نسخ المسار",
+        pdf_split_label: "فصل ملفات PDF المجمعة",
+        pdf_split_desc: "فصل ملفات PDF التي تحتوي على عدة مشاريع تلقائياً",
+        pdf_split_enabled_toast: "تم تفعيل خاصية فصل الملفات.",
+        pdf_split_disabled_toast: "تم إيقاف خاصية فصل الملفات.",
+        smart_project_label: "الربط الذكي للمشاريع (تحت الصيانة)",
+        smart_project_desc: "هذه الميزة تحت الصيانة حالياً ولا يمكن تفعيلها",
+        smart_project_enabled_toast: "تم تفعيل الربط الذكي للمشاريع.",
+        smart_project_disabled_toast: "تم إيقاف الربط الذكي للمشاريع.",
+        stop_label: "إيقاف إجباري",
+        stop_analysis: "إيقاف التحليل",
+        similarity_title: "تشابه في اسم المشروع",
+        use_similar_btn: "استخدام المجلد الموجود",
+        create_new_btn: "إنشاء مجلد جديد",
+        update_title: "تحديث البرنامج",
+        update_available_msg: "يوجد إصدار جديد من Archiva Plus، جاري التحميل في الخلفية...",
+        update_downloaded_msg: "التحديث جاهز. هل تود تثبيته الآن والاستمتاع بالمميزات الجديدة؟",
+        update_later: "لاحقاً",
+        update_now: "تحديث الآن",
+        downloading: "جاري التحميل...",
+        update_success: "تم التحديث بنجاح.",
+        latest_status: "أحدث إصدار",
+        update_avail_status: "تحديث متاح",
+        version_comparison: "v{current} ← v{new}",
+        password_title: "وصول آمن",
+        password_message: "يرجى إدخال كلمة السر لفتح هذه الخصائص",
+        unlock_btn: "فتح الخصائص",
+        wrong_password: "كلمة السر خاطئة",
+        open_in_system: "فتح في النظام",
+        access_granted: "تم السماح بالوصول: تم فتح الميزات الخاصة.",
+        access_denied: "تم رفض الوصول: كلمة السر غير صحيحة.",
+        manager_tab_title: "إضافة مشروع جديد",
+        manager_tab_desc: "أدخل تفاصيل المشروع الجديد لإضافته إلى القائمة المنسدلة في النظام",
+        new_project_type_label: "نوع المشروع",
+        new_project_code_label: "كود المشروع (مثال: 103)",
+        new_project_name_label: "اسم المشروع",
+        new_project_code_placeholder: "أدخل الكود...",
+        new_project_name_placeholder: "أدخل الاسم...",
+        add_project_btn_text: "إضافة المشروع",
+        registered_projects: "المشاريع المسجلة",
+        type_sader: "صادر",
+        type_wared: "وارد"
+    }
+};
+
+let currentLang = localStorage.getItem('archiva-lang') || 'ar';
+let currentTheme = localStorage.getItem('archiva-theme') || 'light';
+let isFeaturesUnlocked = false;
+
+function setTheme(theme) {
+    currentTheme = theme;
+    localStorage.setItem('archiva-theme', theme);
+    document.documentElement.classList.remove('light', 'dark');
+    document.documentElement.classList.add(theme);
+    window.api.setNativeTheme(theme);
+    updateSettingsUI();
+    updateSegmentedIndicators();
+}
+
+function updateSettingsUI() {
+    // Labels
+    const title = document.getElementById('settings-title');
+    const subtitle = document.getElementById('settings-subtitle');
+    const themeLabel = document.getElementById('theme-label');
+    const langLabel = document.getElementById('language-label');
+    const lightBtn = document.getElementById('theme-light-btn');
+    const darkBtn = document.getElementById('theme-dark-btn');
+    const enBtn = document.getElementById('lang-en-btn');
+    const arBtn = document.getElementById('lang-ar-btn');
+
+    if (title) title.innerText = t('settings_title');
+    if (subtitle) subtitle.innerText = t('settings_subtitle');
+    if (themeLabel) themeLabel.innerText = t('theme_label');
+    if (langLabel) langLabel.innerText = t('language_label');
+
+    const tabGenBtn = document.getElementById('tab-general-btn');
+    const tabManBtn = document.getElementById('tab-manager-btn');
+    if (tabGenBtn) tabGenBtn.innerText = t('tab_general');
+    if (tabManBtn) tabManBtn.innerText = t('tab_advanced');
+
+    if (lightBtn) {
+        lightBtn.innerText = t('light_theme');
+        const isActive = currentTheme === 'light';
+        lightBtn.classList.toggle('active', isActive);
+        lightBtn.classList.toggle('text-white', isActive);
+    }
+    if (darkBtn) {
+        darkBtn.innerText = t('dark_theme');
+        const isActive = currentTheme === 'dark';
+        darkBtn.classList.toggle('active', isActive);
+        darkBtn.classList.toggle('text-white', isActive);
+    }
+
+    if (enBtn) {
+        const isActive = currentLang === 'en';
+        enBtn.classList.toggle('active', isActive);
+        enBtn.classList.toggle('text-white', isActive);
+    }
+    if (arBtn) {
+        const isActive = currentLang === 'ar';
+        arBtn.classList.toggle('active', isActive);
+        arBtn.classList.toggle('text-white', isActive);
+    }
+
+    // Storage UI
+    const storageLabel = document.getElementById('storage-label');
+    const storageBtn = document.getElementById('change-storage-btn');
+
+    if (storageLabel) storageLabel.innerText = t('storage_label');
+    if (storageBtn) storageBtn.innerHTML = t('storage_change');
+
+    // Auto-Analysis UI
+    const autoLabel = document.getElementById('auto-analysis-label');
+    const autoDesc = document.getElementById('auto-analysis-desc');
+    if (autoLabel) autoLabel.innerText = t('auto_analysis_label');
+    if (autoDesc) autoDesc.innerText = t('auto_analysis_desc');
+
+
+
+    // Smart Project UI
+    const smartProjectLabel = document.getElementById('smart-project-label');
+    const smartProjectDesc = document.getElementById('smart-project-desc');
+    if (smartProjectLabel) smartProjectLabel.innerText = t('smart_project_label');
+    if (smartProjectDesc) smartProjectDesc.innerText = t('smart_project_desc');
+
+    const pdfSplitLabel = document.getElementById('pdf-split-label');
+    const pdfSplitDesc = document.getElementById('pdf-split-desc');
+    if (pdfSplitLabel) pdfSplitLabel.innerText = t('pdf_split_label');
+    if (pdfSplitDesc) pdfSplitDesc.innerText = t('pdf_split_desc');
+
+    const stopLabel = document.getElementById('stop-label');
+    if (stopLabel) stopLabel.innerText = t('stop_label');
+
+    // Manager Tab Translations
+    const managerTabTitle = document.getElementById('manager-tab-title');
+    const managerTabDesc = document.getElementById('manager-tab-desc');
+    const projectTypeLabel = document.getElementById('new-project-type-label');
+    const projectCodeLabel = document.getElementById('new-project-code-label');
+    const projectNameLabel = document.getElementById('new-project-name-label');
+    const projectBtnText = document.getElementById('add-project-btn-text');
+    const registeredProjectsLabel = document.getElementById('current-projects-label');
+
+    if (managerTabTitle) managerTabTitle.innerText = t('manager_tab_title');
+    if (managerTabDesc) managerTabDesc.innerText = t('manager_tab_desc');
+    if (projectTypeLabel) projectTypeLabel.innerText = t('new_project_type_label');
+    if (projectCodeLabel) projectCodeLabel.innerText = t('new_project_code_label');
+    if (projectNameLabel) projectNameLabel.innerText = t('new_project_name_label');
+    if (projectBtnText) projectBtnText.innerText = t('add_project_btn_text');
+    if (registeredProjectsLabel) registeredProjectsLabel.innerText = t('registered_projects');
+
+    const projectCodeInput = document.getElementById('new-project-code');
+    const projectNameInput = document.getElementById('new-project-name');
+    if (projectCodeInput) projectCodeInput.placeholder = t('new_project_code_placeholder');
+    if (projectNameInput) projectNameInput.placeholder = t('new_project_name_placeholder');
+
+    const projectTypeSelect = document.getElementById('new-project-type');
+    if (projectTypeSelect && projectTypeSelect.options.length >= 2) {
+        projectTypeSelect.options[0].text = t('type_sader');
+        projectTypeSelect.options[1].text = t('type_wared');
+    }
+
+    // Navigation Translations
+    const navAdd = document.querySelector('#nav-add .nav-text');
+    const navLibrary = document.querySelector('#nav-archive .nav-text');
+    const navAi = document.querySelector('#nav-ai .nav-text');
+
+    if (navAdd) navAdd.innerText = t('nav_add');
+    if (navLibrary) navLibrary.innerText = t('nav_library');
+    if (navAi) navAi.innerText = t('nav_ai');
+
+    refreshStorageDisplay();
+    updateSegmentedIndicators();
+}
+
+function updateFilterUI() {
+    const title = document.getElementById('filter-modal-title');
+    const search = document.getElementById('filter-inner-search');
+    const reset = document.getElementById('filter-reset-text');
+    const apply = document.getElementById('filter-apply-text');
+
+    if (title) title.innerText = t('filter_title');
+    if (search) search.placeholder = t('filter_search_placeholder');
+    if (reset) reset.innerText = t('reset_all');
+    if (apply) apply.innerText = t('done');
+}
+
+window.closeFilterMenu = function () {
+    const menu = document.getElementById('filter-menu');
+    const backdrop = document.getElementById('filter-backdrop');
+    const btn = document.getElementById('toggle-filter-menu');
+
+    if (menu) menu.classList.remove('active');
+    if (backdrop) backdrop.classList.add('hidden');
+    if (btn) {
+        btn.classList.remove('bg-primary', 'text-white', 'shadow-lg', 'shadow-primary/20');
+        btn.classList.add('bg-surface-container-low', 'text-on-surface-variant');
+    }
+};
+
+window.openFilterMenu = function () {
+    const menu = document.getElementById('filter-menu');
+    const backdrop = document.getElementById('filter-backdrop');
+    const btn = document.getElementById('toggle-filter-menu');
+
+    if (menu) menu.classList.add('active');
+    if (backdrop) backdrop.classList.remove('hidden');
+    if (btn) {
+        btn.classList.add('bg-primary', 'text-white', 'shadow-lg', 'shadow-primary/20');
+        btn.classList.remove('bg-surface-container-low', 'text-on-surface-variant');
+    }
+};
+
+function updateSegmentedIndicators() {
+    const themeIndicator = document.getElementById('theme-indicator');
+    const langIndicator = document.getElementById('lang-indicator');
+    const settingsIndicator = document.getElementById('settings-tab-indicator');
+
+    if (themeIndicator) {
+        const activeBtn = document.getElementById(`theme-${currentTheme}-btn`);
+        if (activeBtn) {
+            themeIndicator.style.left = currentLang === 'ar' ? 'auto' : `${activeBtn.offsetLeft}px`;
+            themeIndicator.style.right = currentLang === 'ar' ? `${activeBtn.parentElement.offsetWidth - activeBtn.offsetLeft - activeBtn.offsetWidth}px` : 'auto';
+            themeIndicator.style.width = `${activeBtn.offsetWidth}px`;
+        }
+    }
+
+    if (langIndicator) {
+        const activeBtn = document.getElementById(`lang-${currentLang}-btn`);
+        if (activeBtn) {
+            langIndicator.style.left = currentLang === 'ar' ? 'auto' : `${activeBtn.offsetLeft}px`;
+            langIndicator.style.right = currentLang === 'ar' ? `${activeBtn.parentElement.offsetWidth - activeBtn.offsetLeft - activeBtn.offsetWidth}px` : 'auto';
+            langIndicator.style.width = `${activeBtn.offsetWidth}px`;
+        }
+    }
+
+    if (settingsIndicator) {
+        const isGeneralActive = document.getElementById('tab-general-content').classList.contains('opacity-100');
+        const activeTab = isGeneralActive ? 'general' : 'manager';
+        const activeBtn = document.getElementById(`tab-${activeTab}-btn`);
+
+        const tabGenBtn = document.getElementById('tab-general-btn');
+        const tabManBtn = document.getElementById('tab-manager-btn');
+
+        if (tabGenBtn) {
+            tabGenBtn.classList.toggle('active', isGeneralActive);
+            tabGenBtn.classList.toggle('text-white', isGeneralActive);
+            tabGenBtn.classList.toggle('text-on-surface-variant', !isGeneralActive);
+            tabGenBtn.classList.remove('text-primary');
+        }
+        if (tabManBtn) {
+            tabManBtn.classList.toggle('active', !isGeneralActive);
+            tabManBtn.classList.toggle('text-white', !isGeneralActive);
+            tabManBtn.classList.toggle('text-on-surface-variant', isGeneralActive);
+        }
+
+        if (activeBtn) {
+            settingsIndicator.style.transform = 'none'; // Use absolute positioning for better accuracy in complex layouts
+            settingsIndicator.style.left = currentLang === 'ar' ? 'auto' : `${activeBtn.offsetLeft}px`;
+            settingsIndicator.style.right = currentLang === 'ar' ? `${activeBtn.parentElement.offsetWidth - activeBtn.offsetLeft - activeBtn.offsetWidth}px` : 'auto';
+            settingsIndicator.style.width = `${activeBtn.offsetWidth}px`;
+        }
+    }
+}
+
+async function refreshStorageDisplay() {
+    const display = document.getElementById('storage-path-display');
+    if (display) {
+        const path = await window.api.getStorageFolder();
+        display.innerText = path;
+    }
+}
+
+function t(key, data = {}) {
+    let str = (i18n[currentLang] && i18n[currentLang][key]) || (i18n['en'] && i18n['en'][key]) || key;
+    for (const k in data) str = str.replace(`{${k}}`, data[k]);
+    return str;
+}
+
+const getViews = () => ({
+    add: `
+        <div id="add-view-container" class="relative flex flex-col items-center justify-center min-h-[85vh] px-6 animate-fade-in overflow-hidden">
+            <div class="relative z-10 w-full max-w-5xl flex flex-col items-center">
+                <div id="hero-header" class="text-center space-y-6 mb-16 transition-all duration-700">
+                    <h1 class="font-headline text-5xl md:text-7xl font-extrabold tracking-tight text-on-surface leading-tight">${t('hero_title')}</h1>
+                    <p class="text-on-surface-variant text-lg md:text-xl max-w-xl mx-auto leading-relaxed opacity-70 font-medium">${t('hero_desc')}</p>
+                </div>
+
+                <div id="upload-wrapper" class="upload-btn-container relative flex flex-col items-center group">
+                    <div class="absolute inset-0 bg-primary/20 blur-3xl rounded-full scale-75 group-hover:scale-100 transition-transform duration-700 opacity-0 group-hover:opacity-40"></div>
+                    <button id="main-upload-btn" class="group relative flex items-center justify-center w-40 h-40 md:w-48 md:h-48 rounded-[3rem] editorial-gradient text-white shadow-[0_20px_50px_rgba(79,70,229,0.3)] transition-all duration-500 hover:scale-105 active:scale-95 z-10">
+                        <span id="upload-icon-container" class="transition-transform duration-500 group-hover:rotate-90 group-hover:scale-110">${getIcon('add', 'xl')}</span>
+                    </button>
+                    <div id="ready-hint" class="flex flex-col items-center gap-4 mt-12">
+                        <div class="flex items-center gap-3">
+                            <span class="font-label text-[10px] font-black uppercase tracking-[0.3em] text-on-surface-variant/40">${t('ready_analysis')}</span>
+                        </div>
+                        <div class="h-1 w-24 bg-surface-container rounded-full overflow-hidden">
+                             <div class="h-full w-1/3 bg-primary/30 animate-[loading_2s_infinite]"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="staging-area" class="staging-area w-full grid grid-cols-12 gap-8 items-start mt-12">
+                    <div class="col-span-12 lg:col-span-8 bg-surface-container-lowest/80 backdrop-blur-xl rounded-[2.5rem] editorial-shadow overflow-hidden border border-outline-variant/10 flex flex-col max-h-[600px]">
+                            <div class="px-10 py-7 border-b border-outline-variant/10 flex items-center justify-between">
+                                <div class="flex flex-col gap-1">
+                                    <h3 class="text-[11px] font-black uppercase tracking-widest text-on-surface">${t('staged_archival')}</h3>
+                                    <p class="text-[10px] text-on-surface-variant/60 font-bold tracking-tight">Review assets before intelligence archival</p>
+                                </div>
+                                <div class="flex items-center gap-4 bg-surface-container-low/50 px-4 py-2 rounded-2xl border border-outline-variant/10">
+                                    <div class="flex items-center gap-3">
+                                        <button id="manual-split-toggle" class="w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 bg-surface-container-low text-on-surface-variant hover:bg-primary/10 hover:text-primary border border-transparent hover:border-primary/20" type="button" title="${t('pdf_split_label')}">
+                                            ${getIcon('pdf', 'sm')}
+                                        </button>
+                                        <button id="force-ai-toggle" class="w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 bg-surface-container-low text-on-surface-variant hover:bg-primary/10 hover:text-primary border border-transparent hover:border-primary/20" type="button" title="${t('force_ai_toggle')}">
+                                            ${getIcon('auto_awesome', 'sm')}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        <div id="pending-list" class="file-list-scroll flex-1 overflow-y-auto divide-y divide-outline-variant/5 px-4 pb-6 force-right-scroll"></div>
+                    </div>
+                    <div class="col-span-12 lg:col-span-4 flex flex-col gap-4">
+                        <button id="confirm-upload-btn" class="w-full py-8 bg-primary text-white rounded-[2rem] font-black uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-4 hover:brightness-110 shadow-xl shadow-primary/30 transition-all active:scale-95" type="button">
+                            ${getIcon('verified', 'sm')} ${t('confirm_archival')}
+                        </button>
+                        <button id="cancel-upload-btn" class="w-full py-5 bg-surface-container-low text-on-surface-variant rounded-[1.5rem] font-black uppercase tracking-[0.2em] text-[10px] flex items-center justify-center gap-3 hover:bg-surface-container-high transition-all" type="button">
+                            ${getIcon('close', 'sm')} ${t('clear_list')}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `,
+    archive: `
+        <div class="w-full max-w-full px-4 md:px-12 mx-auto animate-fade-in pb-24 pt-16">
+            <!-- Modern Header Section -->
+            <div class="mb-20 flex flex-col items-center justify-center text-center">
+                <h1 class="text-5xl md:text-6xl font-black tracking-tight text-on-surface mb-12">${t('archived_title')}</h1>
+                
+                <!-- Expanded Modern Search Bar -->
+                <div class="w-full max-w-4xl relative group">
+                    <div class="absolute inset-y-0 start-8 flex items-center pointer-events-none text-on-surface-variant group-focus-within:text-primary transition-colors">
+                        ${getIcon('search', 'lg')}
+                    </div>
+                    <input id="global-search-input" class="w-full bg-surface-container-low backdrop-blur-md border border-outline-variant/20 rounded-3xl py-7 ps-24 pe-32 text-2xl font-headline font-semibold text-on-surface focus:ring-4 focus:ring-primary/10 transition-all placeholder:text-on-surface-variant/20 shadow-[0_20px_50px_rgba(0,0,0,0.08)] outline-none" placeholder="${t('search_placeholder')}" type="text"/>
+                    <div class="absolute inset-y-0 end-8 flex items-center gap-3">
+                        <button id="toggle-recency-filter" class="w-12 h-12 rounded-2xl bg-surface-container-low hover:bg-surface-container transition-all flex items-center justify-center text-on-surface-variant pointer-events-auto" title="${t('recent_files')}">${getIcon('history', 'sm')}</button>
+                        <button id="toggle-filter-menu" class="relative w-12 h-12 rounded-2xl bg-surface-container-low text-on-surface-variant hover:bg-surface-container transition-all flex items-center justify-center pointer-events-auto" title="${t('filter_title')}">
+                            ${getIcon('tune', 'sm')}
+                            <div id="filter-indicator" class="absolute -top-1 -right-1 w-4 h-4 bg-accent border-2 border-surface-container-lowest rounded-full hidden animate-bounce"></div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-12 gap-10">
+                <div class="col-span-12 lg:col-span-5 xl:col-span-4 space-y-8 lg:sticky lg:top-12 lg:self-start">
+                    <!-- View Switcher -->
+                    <div class="bg-surface-container-low/50 backdrop-blur-md p-1.5 rounded-[1.5rem] flex items-center gap-1 border border-outline-variant/10">
+                        <button id="toggle-list-view" class="view-switcher-btn flex-1 flex items-center justify-center gap-2 py-3 text-[10px] font-black uppercase tracking-widest transition-all rounded-xl" type="button">${getIcon('list', 'xs')}${t('list')}</button>
+                        <button id="toggle-grid-view" class="view-switcher-btn flex-1 flex items-center justify-center gap-2 py-3 text-[10px] font-black uppercase tracking-widest transition-all rounded-xl" type="button">${getIcon('grid_view', 'xs')}${t('grid')}</button>
+                    </div>
+
+                    <div id="archive-sidebar-content" class="h-full">
+                        <div id="global-insights" class="bg-surface-container-low rounded-[2rem] border border-outline-variant/5 relative group/sidebar overflow-hidden" style="-webkit-mask-image: -webkit-radial-gradient(white, black);">
+                            <div class="max-h-[85vh] overflow-y-auto custom-scrollbar force-right-scroll">
+                                <div class="p-8 min-h-full">
+                                    <div class="flex items-center justify-between mb-8">
+                                        <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant/50 font-label text-right rtl:text-left">${t('insights_dashboard')}</h3>
+                                        <button id="clear-archive-btn" class="p-2 text-on-surface-variant/20 hover:text-error transition-all opacity-0 group-hover/sidebar:opacity-100" title="Clear Archive">
+                                            ${getIcon('delete', 'sm')}
+                                        </button>
+                                    </div>
+                                    <div id="selection-controls" class="hidden flex flex-col gap-3 mb-8 animate-fade-in border-b border-outline-variant/5 pb-8">
+                                        <button id="batch-delete-btn" class="w-full py-4 bg-error text-on-error text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-error/20 hover:bg-error/80 transition-all flex items-center justify-center gap-2" type="button">
+                                            ${getIcon('delete', 'sm')} ${t('delete_selected')}
+                                        </button>
+                                        <button id="batch-cancel-btn" class="w-full py-3 bg-surface-container-highest text-on-surface-variant text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-surface-container-high transition-all" type="button">
+                                            ${t('cancel')}
+                                        </button>
+                                    </div>
+                                    <div class="space-y-8">
+                                        <div id="results-count-container" class="space-y-1">
+                                            <p class="text-sm font-medium text-on-surface-variant">${t('global_assets')}</p>
+                                            <p id="total-assets" class="text-4xl font-black text-primary">0</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="document-intelligence" class="hidden bg-surface-container-low rounded-[2rem] border border-outline-variant/5 overflow-hidden" style="-webkit-mask-image: -webkit-radial-gradient(white, black);">
+                            <div class="max-h-[85vh] overflow-y-auto custom-scrollbar" style="direction: ltr;">
+                                <div style="direction: ${currentLang === 'ar' ? 'rtl' : 'ltr'};" class="p-8 min-h-full">
+                                    <button id="back-to-insights" class="flex items-center gap-2 text-[10px] font-black text-primary uppercase tracking-widest mb-6 transition-transform">
+                                        ${getIcon('arrow_back', 'sm flip-rtl')} ${t('back_to_insights')}
+                                    </button>
+                                    <div id="sidebar-doc-details" class="space-y-6"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-span-12 lg:col-span-7 xl:col-span-8">
+                    <div id="archive-render-target" class="w-full h-full min-h-[400px]"></div>
+                </div>
+            </div>
+
+                </div>
+            </div>
+        </div>
+    `,
+    ai: `
+        <div id="ai-chat-container" class="fluid-container w-full h-[calc(100vh-140px)] flex flex-col animate-fade-in relative">
+            <!-- Main Scrollable Area -->
+            <div id="chat-scroll-area" class="flex-1 overflow-y-auto w-full scroll-smooth px-4">
+                <!-- Welcome Screen -->
+                <div id="ai-welcome-screen" class="w-full h-full flex flex-col items-center justify-center p-6 text-center space-y-6">
+                    <img src="../logo/logo.png" class="w-16 h-16 object-contain opacity-20 mb-2">
+                    <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-on-surface/80 text-balance">${t('ai_welcome_title')}</h1>
+                </div>
+
+                <!-- Messages Container -->
+                <div id="chat-messages" class="w-full space-y-8 flex flex-col pt-4 pb-12"></div>
+            </div>
+
+            <!-- Card-based Input Area -->
+            <div class="w-full px-4 pt-4">
+                <div class="max-w-3xl mx-auto bg-surface-container-low rounded-2xl border border-outline-variant/20 shadow-lg flex flex-col p-4 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+                    <div class="flex-1 flex flex-col relative w-full pt-4">
+                        <div id="attachments-container" class="w-full flex items-center gap-3 overflow-x-auto pb-3 mb-2 px-1 scrollbar-hide hidden"></div>
+                        <textarea id="chat-input-textarea" rows="1" class="w-full bg-transparent border-none focus:ring-0 resize-none p-0 text-md font-medium text-on-surface placeholder:text-on-surface-variant/40 max-h-64 scrollbar-hide" placeholder="${t('chat_placeholder')}"></textarea>
+                    </div>
+
+                    <div class="flex items-center justify-between mt-6">
+                        <button id="chat-attach-btn" class="p-2 text-on-surface-variant hover:bg-surface-container-highest rounded-lg transition-all" title="Attach file" type="button">
+                            <span class="text-primary">${getIcon('add', 'sm')}</span>
+                        </button>
+
+                        <div class="flex items-center gap-4">
+                             <span class="text-[9px] font-bold uppercase tracking-[0.2em] text-on-surface-variant/40">Archiva Plus Ai 2.5</span>
+                             <button id="new-chat-btn" class="p-2 bg-primary text-white rounded-xl shadow-md hover:shadow-lg hover:scale-105 transition-all flex items-center justify-center" title="${t('new_chat')}" type="button">
+                                ${getIcon('edit_square', 'sm')}
+                             </button>
+                             <button id="chat-send-btn" class="hidden" type="button"></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `,
+    settings: `
+        <div class="max-w-4xl mx-auto px-6 py-20 animate-fade-in flex flex-col items-center justify-center text-center space-y-6">
+            <div class="w-24 h-24 bg-primary/10 text-primary rounded-[2rem] flex items-center justify-center shadow-inner">
+                ${getIcon('settings', 'xl')}
+            </div>
+            <div class="space-y-2">
+                <h1 class="text-3xl font-black text-on-surface tracking-tight">${t('settings_title')}</h1>
+                <p class="text-on-surface-variant/60 max-w-sm mx-auto leading-relaxed">
+                    ${currentLang === 'ar'
+            ? 'يرجى استخدام قائمة الإعدادات العلوية للوصول إلى كافة الخيارات المتقدمة وتخصيص تجربتك.'
+            : 'Please use the settings menu in the header to access advanced options and customize your experience.'}
+                </p>
+            </div>
+            <button onclick="toggleSettingsModal(true)" class="mt-4 px-8 py-4 bg-primary text-white text-[10px] font-black uppercase tracking-widest rounded-2xl shadow-lg shadow-primary/20 hover:brightness-110 active:scale-95 transition-all flex items-center gap-3">
+                ${getIcon('tune', 'sm')} ${t('settings_title')}
+            </button>
+        </div>
+    `
+});
+
+// --- Core Logic ---
+
+function getIconForType(type) {
+    const t = (type || '').toUpperCase();
+    if (t === 'PDF') return 'pdf';
+    if (t === 'IMAGE') return 'image';
+    return 'description';
+}
+
+function updateLayoutDirection() {
+    const dir = (currentLang === 'ar') ? 'rtl' : 'ltr';
+    document.documentElement.dir = dir;
+    document.documentElement.lang = currentLang;
+    document.body.dir = dir;
+    document.body.classList.toggle('rtl-mode', currentLang === 'ar');
+    document.documentElement.style.setProperty('--current-dir', dir);
+
+    updateSettingsUI();
+    updateFilterUI();
+
+    const navAdd = document.getElementById('nav-add');
+    const navArchive = document.getElementById('nav-archive');
+    const navAi = document.getElementById('nav-ai');
+    if (navAdd) navAdd.title = t('nav_add');
+    if (navArchive) navArchive.title = t('nav_library');
+    if (navAi) navAi.title = t('nav_ai');
+
+    viewsInitialized = false;
+    // Security check: If starting on AI view but locked, redirect to add
+
+    switchView(currentView);
+    moveNavIndicator(currentView);
+    updatePipelineUI();
+}
+
+function setLanguage(lang) {
+    currentLang = lang;
+    localStorage.setItem('archiva-lang', lang);
+    updateLayoutDirection();
+}
+
+function toggleSettingsModal(show) {
+    const modal = document.getElementById('settings-modal');
+    if (modal) {
+        modal.classList.toggle('hidden', !show);
+        if (show) {
+            setTimeout(updateSegmentedIndicators, 10);
+        } else {
+            aiUnlocked = false;
+            if (window.api.lockFeatures) window.api.lockFeatures();
+        }
+    }
+}
+
+function confirmAction(titleKey, msgKey, type = 'error', customMsg = null, customOk = null, customCancel = null, forceSettings = false) {
+    return new Promise((resolve) => {
+        const isSettings = forceSettings || (document.getElementById('settings-modal') && !document.getElementById('settings-modal').classList.contains('hidden'));
+        const suffix = isSettings ? '-settings' : '';
+
+        const modal = document.getElementById('confirm-modal' + suffix);
+        const title = document.getElementById('confirm-title' + suffix);
+        const message = document.getElementById('confirm-message' + suffix);
+        const okBtn = document.getElementById('confirm-ok-btn' + suffix);
+        const cancelBtn = document.getElementById('confirm-cancel-btn' + suffix);
+        const backdrop = document.getElementById('confirm-backdrop' + suffix);
+        const iconBg = document.getElementById('confirm-icon-bg' + suffix);
+        const iconPath = document.getElementById('confirm-icon-path' + suffix);
+
+        if (!modal || !title || !message || !okBtn || !cancelBtn) {
+            console.error("Modal elements missing for suffix:", suffix);
+            return resolve(false);
+        }
+
+        title.innerText = t(titleKey);
+        message.innerText = customMsg || t(msgKey);
+
+        okBtn.innerText = customOk ? t(customOk) : t('confirm_btn');
+        cancelBtn.innerText = customCancel ? t(customCancel) : t('cancel');
+
+        // Apply Theme
+        if (type === 'ai') {
+            if (iconBg) iconBg.className = "w-16 h-16 bg-primary/10 text-primary rounded-full flex items-center justify-center transition-all duration-500";
+            if (okBtn) okBtn.className = "flex-1 py-4 bg-primary text-white text-[10px] font-black uppercase tracking-widest rounded-2xl shadow-lg shadow-primary/20 hover:bg-primary/80 transition-all active:scale-95";
+            if (iconPath) iconPath.setAttribute('d', SVG_ICONS['auto_awesome']);
+        } else if (type === 'delete') {
+            if (iconBg) iconBg.className = "w-16 h-16 bg-error/10 text-error rounded-full flex items-center justify-center transition-all duration-500";
+            if (okBtn) okBtn.className = "flex-1 py-4 bg-error text-white text-[10px] font-black uppercase tracking-widest rounded-2xl shadow-lg shadow-error/20 hover:bg-error/80 transition-all active:scale-95";
+            if (iconPath) iconPath.setAttribute('d', SVG_ICONS['delete']);
+        } else {
+            // Default Error Theme
+            if (iconBg) iconBg.className = "w-16 h-16 bg-error/10 text-error rounded-full flex items-center justify-center transition-all duration-500";
+            if (okBtn) okBtn.className = "flex-1 py-4 bg-error text-white text-[10px] font-black uppercase tracking-widest rounded-2xl shadow-lg shadow-error/20 hover:bg-error/80 transition-all active:scale-95";
+            if (iconPath) iconPath.setAttribute('d', 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z');
+        }
+
+        modal.classList.remove('hidden');
+
+        const cleanup = (val) => {
+            modal.classList.add('hidden');
+            okBtn.onclick = null;
+            cancelBtn.onclick = null;
+            backdrop.onclick = null;
+            resolve(val);
+        };
+
+        okBtn.onclick = () => cleanup(true);
+        cancelBtn.onclick = () => cleanup(false);
+        backdrop.onclick = () => cleanup(false);
+    });
+}
+
+function requestFeatureUnlock() {
+    return new Promise((resolve) => {
+        return resolve(true); // Always unlocked
+
+
+        const modal = document.getElementById('password-modal');
+        const title = document.getElementById('password-title');
+        const message = document.getElementById('password-message');
+        const input = document.getElementById('feature-password-input');
+        const unlockBtn = document.getElementById('password-unlock-btn');
+        const cancelBtn = document.getElementById('password-cancel-btn');
+        const backdrop = document.getElementById('password-backdrop');
+
+        if (!modal) return resolve(false);
+
+        title.innerText = t('password_title');
+        message.innerText = t('password_message');
+        unlockBtn.innerText = t('unlock_btn');
+        cancelBtn.innerText = t('cancel');
+        input.value = '';
+        input.placeholder = '••••••••';
+
+        modal.classList.remove('hidden');
+        input.focus();
+
+        const cleanup = (val) => {
+            modal.classList.add('hidden');
+            unlockBtn.onclick = null;
+            cancelBtn.onclick = null;
+            backdrop.onclick = null;
+            input.onkeydown = null;
+            resolve(val);
+        };
+
+        const attemptUnlock = () => {
+            if (input.value === FEATURE_PASSWORD) {
+                isFeaturesUnlocked = true;
+                localStorage.setItem('archiva-features-unlocked', 'true');
+                showToast(currentLang === 'ar' ? 'تم فتح جميع الخصائص بنجاح' : 'All features unlocked successfully');
+                cleanup(true);
+            } else {
+                input.classList.add('shake');
+                input.value = '';
+                input.placeholder = t('wrong_password');
+                setTimeout(() => input.classList.remove('shake'), 500);
+            }
+        };
+
+        unlockBtn.onclick = attemptUnlock;
+        input.onkeydown = (e) => { if (e.key === 'Enter') attemptUnlock(); };
+        cancelBtn.onclick = () => cleanup(false);
+        backdrop.onclick = () => cleanup(false);
+    });
+}
+
+// Toast notification logic is handled at the top of the file.
+
+
+function moveNavIndicator(viewName) {
+    const btn = document.getElementById(`nav-${viewName}`);
+    const indicator = document.getElementById('nav-indicator');
+    if (btn && indicator) {
+        indicator.style.width = `${btn.offsetWidth}px`;
+        indicator.style.left = `${btn.offsetLeft}px`;
+    }
+}
+// --- Chat Logic ---
+
+function setupChatUI() {
+    const chatMessages = document.getElementById('chat-messages');
+    const welcomeScreen = document.getElementById('ai-welcome-screen');
+
+    // Clear welcome message if history exists
+    chatMessages.innerHTML = '';
+    if (chatHistory.length > 0) {
+        welcomeScreen.classList.add('hidden');
+        chatMessages.classList.remove('hidden');
+    } else {
+        welcomeScreen.classList.remove('hidden');
+        chatMessages.classList.add('hidden');
+    }
+
+    // Render existing history
+    chatHistory.forEach(msg => appendMessageToUI(msg.role, msg.content, msg.attachments));
+
+    const input = document.getElementById('chat-input-textarea');
+    const sendBtn = document.getElementById('chat-send-btn');
+    const visibleSendBtn = document.getElementById('chat-send-btn-visible');
+    const attachBtn = document.getElementById('chat-attach-btn');
+    const removeAttachBtn = document.getElementById('chat-remove-attachment');
+    const newChatBtn = document.getElementById('new-chat-btn');
+
+    if (newChatBtn) {
+        newChatBtn.onclick = () => {
+            chatHistory = [];
+            pendingAttachments = [];
+            chatMessages.innerHTML = '';
+            welcomeScreen.classList.remove('hidden');
+            input.value = '';
+            input.style.height = 'auto';
+            renderAttachments();
+        };
+    }
+
+    // Auto-resize textarea
+    input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 128) + 'px'; // Max 32rem
+    });
+
+    const triggerSend = async () => {
+        const text = input.value.trim();
+        if (!text && pendingAttachments.length === 0) return;
+
+        // Require AI unlock before sending any chat message
+        const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لبدء المحادثة مع الذكاء الاصطناعي' : 'Enter password to start AI chat');
+        if (!unlocked) return;
+
+        input.value = '';
+        input.style.height = 'auto';
+
+        const userMsg = {
+            role: 'user',
+            content: text,
+            attachments: [...pendingAttachments]
+        };
+
+        chatHistory.push(userMsg);
+        appendMessageToUI('user', text, userMsg.attachments);
+        scrollToChatBottom();
+
+        // Clear attachment UI
+        pendingAttachments = [];
+        renderAttachments();
+
+        // Add loading state
+        const loadingId = 'loading-' + Date.now();
+        appendMessageToUI('assistant', '<div class="flex items-center gap-1.5 h-4"><div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce"></div><div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce" style="animation-delay: 0.1s"></div><div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce" style="animation-delay: 0.2s"></div></div>', null, loadingId);
+        scrollToChatBottom();
+
+        // Send to backend
+        try {
+            const response = await window.api.sendChat(chatHistory);
+            const loadingEl = document.getElementById(loadingId);
+            if (loadingEl) loadingEl.remove();
+
+            if (response.error) {
+                appendMessageToUI('assistant', `<span class="text-error">Error: ${response.error}</span>`);
+            } else {
+                chatHistory.push({ role: 'assistant', content: response.text });
+                appendMessageToUI('assistant', response.text);
+            }
+        } catch (err) {
+            const loadingEl = document.getElementById(loadingId);
+            if (loadingEl) loadingEl.remove();
+            appendMessageToUI('assistant', `<span class="text-error">Connection Failed.</span>`);
+        }
+    };
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            triggerSend();
+        }
+    });
+
+    sendBtn.addEventListener('click', triggerSend);
+
+    attachBtn.addEventListener('click', async () => {
+        const files = await window.api.selectFiles();
+        if (files && files.length > 0) {
+            // Push maximum 5 files total at a time
+            const total = pendingAttachments.length + files.length;
+            if (total > 5) {
+                showToast('Maximum 5 attachments allowed.');
+                const diff = 5 - pendingAttachments.length;
+                pendingAttachments.push(...files.slice(0, diff));
+            } else {
+                pendingAttachments.push(...files);
+            }
+            renderAttachments();
+            input.focus();
+        }
+    });
+
+}
+
+function renderAttachments() {
+    const container = document.getElementById('attachments-container');
+    if (!container) return;
+
+    if (pendingAttachments.length === 0) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = pendingAttachments.map((file, index) => {
+        const ext = file.name.split('.').pop().toLowerCase();
+        const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
+        const iconDiv = isImage
+            ? `<img src="file://${file.path.replace(/\\\\/g, '/')}" class="w-full h-full object-cover">`
+            : `<div class="text-error bg-error/10 w-full h-full flex items-center justify-center">${getIcon('picture_as_pdf', 'sm')}</div>`;
+
+        return `
+            <div class="bg-surface border border-outline-variant/20 shadow-md p-1.5 rounded-xl flex items-center gap-3 shrink-0 max-w-[200px] animate-fade-in group hover:border-error/30 transition-all">
+                <div class="w-8 h-8 rounded shrink-0 bg-surface-container-highest flex items-center justify-center overflow-hidden">
+                    ${iconDiv}
+                </div>
+                <div class="flex flex-col flex-1 min-w-0">
+                    <span class="text-[10px] truncate font-bold text-on-surface" dir="auto">${file.name}</span>
+                    <span class="text-[8px] font-bold text-on-surface-variant uppercase">${ext}</span>
+                </div>
+                <button class="remove-attachment-btn text-on-surface-variant group-hover:text-error hover:bg-error/10 rounded-full p-1 transition-all" data-index="${index}">
+                    ${getIcon('close', 'sm')}
+                </button>
+            </div>
+        `;
+    }).join('');
+
+    container.querySelectorAll('.remove-attachment-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+            pendingAttachments.splice(idx, 1);
+            renderAttachments();
+        });
+    });
+}
+
+// --- AI Vision Visualization ---
+
+function isDetectionJSON(text) {
+    try {
+        const data = JSON.parse(text);
+        if (Array.isArray(data) && data.length > 0 && data[0].box_2d) return true;
+    } catch (e) { }
+    return false;
+}
+
+function renderVisionPanel(text) {
+    let detections = [];
+    try { detections = JSON.parse(text); } catch (e) { return text; }
+
+    // Find last image in history
+    let lastImagePath = null;
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+        const msg = chatHistory[i];
+        if (msg.attachments) {
+            const img = msg.attachments.find(a => !a.path.toLowerCase().endsWith('.pdf'));
+            if (img) {
+                lastImagePath = img.path;
+                break;
+            }
+        }
+    }
+
+    if (!lastImagePath) return `<pre class="bg-surface-container-highest p-4 rounded-xl text-xs overflow-x-auto">${text}</pre>`;
+
+    const boxesHtml = detections.map((det, idx) => {
+        // Gemini coords: [ymin, xmin, ymax, xmax] normalized to 1000
+        const [ymin, xmin, ymax, xmax] = det.box_2d;
+        const width = (xmax - xmin) / 10;
+        const height = (ymax - ymin) / 10;
+        const left = xmin / 10;
+        const top = ymin / 10;
+
+        const label = det.label || `Object ${idx + 1}`;
+        const labelWidth = (label.length * 7) + 12;
+
+        return `
+            <rect class="detection-box" x="${left}%" y="${top}%" width="${width}%" height="${height}%">
+                <title>${label}</title>
+            </rect>
+            <g class="detection-label-group">
+                <rect class="detection-label-bg" x="${left}%" y="${Math.max(0, top - 3)}%" width="${labelWidth}px" height="18px"></rect>
+                <text class="detection-label-text" x="${left + 0.5}%" y="${Math.max(2, top - 1)}%" dominant-baseline="middle">${label}</text>
+            </g>
+        `;
+    }).join('');
+
+    const summaryList = detections.map(d => `<li>${d.label}</li>`).slice(0, 5).join(', ');
+    const moreCount = detections.length > 5 ? ` and ${detections.length - 5} more` : '';
+
+    return `
+        <div class="vision-panel">
+            <div class="detection-container">
+                <img src="file://${lastImagePath.replace(/\\/g, '/')}" alt="Base Image">
+                <svg class="detection-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                    ${boxesHtml}
+                </svg>
+            </div>
+            <div class="vision-summary">
+                <h4>Detected Elements</h4>
+                <p>Identified ${detections.length} key components in the asset: ${summaryList}${moreCount}.</p>
+            </div>
+        </div>
+    `;
+}
+
+function appendMessageToUI(role, text, attachments = null, id = null) {
+    const chatMessages = document.getElementById('chat-messages');
+    const welcomeScreen = document.getElementById('ai-welcome-screen');
+    if (!chatMessages) return;
+
+    // Hide welcome and reveal messages on first message
+    if (welcomeScreen && !welcomeScreen.classList.contains('hidden')) {
+        welcomeScreen.classList.add('hidden');
+    }
+    chatMessages.classList.remove('hidden');
+
+    const isUser = role === 'user';
+
+    let contentHtml = '';
+    if (attachments && attachments.length > 0) {
+        contentHtml += `<div class="flex flex-wrap gap-3 mb-3">`;
+        attachments.forEach(file => {
+            const isPdf = file.path.toLowerCase().endsWith('.pdf');
+            const fileName = file.name || file.path.split(/[/\\]/).pop();
+
+            if (isPdf) {
+                contentHtml += `<div class="flex items-center gap-3 p-3 bg-surface-container-highest rounded-xl border border-outline-variant/10 shadow-sm max-w-[250px]"><div class="w-10 h-10 bg-error/10 text-error flex items-center justify-center rounded-lg flex-shrink-0">${getIcon('picture_as_pdf', 'sm')}</div><span class="text-xs font-semibold truncate flex-1 text-on-surface" dir="auto">${fileName}</span></div>`;
+            } else {
+                contentHtml += `<img src="file://${file.path.replace(/\\\\/g, '/')}" class="h-24 w-auto rounded-xl border border-outline-variant/10 shadow-sm object-cover">`;
+            }
+        });
+        contentHtml += `</div>`;
+    }
+
+    if (text) {
+        if (isUser) {
+            contentHtml += `<div>${text.replace(/\\n/g, '<br>')}</div>`;
+        } else {
+            if (isDetectionJSON(text)) {
+                contentHtml += renderVisionPanel(text);
+            } else {
+                const mdHtml = window.marked ? window.marked.parse(text) : text;
+                contentHtml += `<div class="chat-markdown">${mdHtml}</div>`;
+            }
+        }
+    }
+
+    const isRtl = currentLang === 'ar';
+    let wrapperClasses = '';
+
+    if (isUser) {
+        wrapperClasses = isRtl ? 'mr-auto items-start' : 'ml-auto items-end';
+    } else {
+        wrapperClasses = isRtl ? 'ml-auto items-end text-right' : 'mr-auto items-start text-left';
+    }
+
+    const isLoading = id && id.startsWith('loading-');
+
+    const html = `
+        <div class="max-w-3xl mx-auto w-full mb-8 flex flex-col group/msg" ${id ? `id="${id}"` : ''}>
+            <div class="w-fit min-w-0 flex flex-col ${wrapperClasses} max-w-[85%]">
+                ${!isUser ? `
+                <div class="flex items-center gap-3 mb-4 group ${isRtl ? 'flex-row-reverse' : 'flex-row'}">
+                    <div class="relative w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0 border border-primary/20 overflow-hidden shadow-sm">
+                        ${isLoading ? `<div class="absolute inset-0 rounded-xl border-[1.5px] border-primary/20 border-t-primary animate-spin"></div>` : ''}
+                        <img src="../logo/logo.png" class="w-5 h-5 object-contain" alt="Archiva Plus AI">
+                    </div>
+                    <span class="text-[10px] font-black uppercase tracking-[0.2em] text-primary/60">Archiva Plus Intelligence</span>
+                </div>
+                <div class="text-on-surface bg-surface-container-lowest border border-outline-variant/10 rounded-[2rem] ${isRtl ? 'rounded-tr-sm' : 'rounded-tl-sm'} px-8 py-6 text-[1.05rem] leading-relaxed break-words font-bold shadow-xl shadow-black/[0.02] transition-all hover:border-primary/20">
+                    ${contentHtml}
+                </div>
+                ` : `
+                <div class="bg-primary text-white rounded-[2rem] ${isRtl ? 'rounded-bl-sm' : 'rounded-br-sm'} px-8 py-6 text-[1.05rem] leading-relaxed border border-primary/10 break-words font-bold shadow-xl shadow-primary/20 transition-all hover:brightness-110">
+                    ${contentHtml}
+                </div>
+                `}
+            </div>
+        </div>
+    `;
+
+    chatMessages.insertAdjacentHTML('beforeend', html);
+}
+
+function scrollToChatBottom() {
+    const scrollArea = document.getElementById('chat-scroll-area');
+    if (scrollArea) {
+        scrollArea.scrollTop = scrollArea.scrollHeight;
+    }
+}
+
+function switchView(viewName) {
+    if (!viewport) return;
+
+    // Persist view state
+    localStorage.setItem('archiva-last-view', viewName);
+
+    const isNewView = (currentView !== viewName);
+    currentView = viewName;
+
+    const isFirstInit = !viewsInitialized;
+    if (isFirstInit) {
+        const views = getViews();
+        document.getElementById('app-viewport').innerHTML = `
+            <div id="view-add" class="view-container hidden">${views.add}</div>
+            <div id="view-archive" class="view-container hidden">${views.archive}</div>
+            <div id="view-ai" class="view-container hidden">${views.ai}</div>
+            <div id="view-settings" class="view-container hidden">${views.settings}</div>
+        `;
+        viewsInitialized = true;
+
+        setupChatUI();
+
+        const upBtn = document.getElementById('main-upload-btn');
+        if (upBtn) {
+            upBtn.onclick = handleFileSelection;
+
+            // --- PREMIUM FULL-PAGE SMART DROP ---
+            const addContainer = document.getElementById('add-view-container');
+            const dragOverlay = document.getElementById('drag-overlay');
+
+            if (addContainer && dragOverlay) {
+                let dragCounter = 0;
+
+                addContainer.addEventListener('dragenter', (e) => {
+                    e.preventDefault();
+                    dragCounter++;
+                    dragOverlay.classList.remove('opacity-0');
+                    dragOverlay.classList.add('opacity-100');
+                });
+
+                addContainer.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                });
+
+                addContainer.addEventListener('dragleave', (e) => {
+                    dragCounter--;
+                    if (dragCounter === 0) {
+                        dragOverlay.classList.remove('opacity-100');
+                        dragOverlay.classList.add('opacity-0');
+                    }
+                });
+
+                addContainer.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    dragCounter = 0;
+                    dragOverlay.classList.remove('opacity-100');
+                    dragOverlay.classList.add('opacity-0');
+
+                    const dt = e.dataTransfer;
+                    if (dt.files && dt.files.length > 0) {
+                        const files = Array.from(dt.files).map(f => {
+                            const actualPath = (window.api && window.api.getPathForFile) ? window.api.getPathForFile(f) : f.path;
+                            return {
+                                name: f.name,
+                                path: actualPath || '',
+                                size: f.size
+                            };
+                        }).filter(f => f.path.trim() !== '');
+
+                        if (files.length === 0) {
+                            showToast(currentLang === 'ar' ? 'عذراً، لا يمكن معالجة هذا الملف' : 'Sorry, invalid file');
+                            return;
+                        }
+
+                        const newFiles = files.filter(f => !pendingFiles.some(pf => pf.path === f.path));
+                        pendingFiles = [...pendingFiles, ...newFiles];
+                        enterStagingState();
+                    }
+                });
+            }
+        }
+
+        const gridBtn = document.getElementById('toggle-grid-view');
+        const listBtn = document.getElementById('toggle-list-view');
+        if (gridBtn && listBtn) {
+            gridBtn.onclick = () => { archiveLayout = 'grid'; renderArchiveView(); };
+            listBtn.onclick = () => { archiveLayout = 'list'; renderArchiveView(); };
+        }
+
+        const backBtn = document.getElementById('back-to-insights');
+        const insights = document.getElementById('global-insights');
+        const intel = document.getElementById('document-intelligence');
+        if (backBtn && insights && intel) {
+            backBtn.onclick = () => {
+                insights.classList.remove('hidden');
+                intel.classList.add('hidden');
+            }
+        };
+
+        const clearBtn = document.getElementById('clear-archive-btn');
+        const batchDeleteBtn = document.getElementById('batch-delete-btn');
+        const batchCancelBtn = document.getElementById('batch-cancel-btn');
+
+        if (clearBtn) clearBtn.onclick = handleClearArchive;
+        // Import folder (memory) button
+        const importBtn = document.getElementById('import-folder-btn');
+        if (importBtn) importBtn.onclick = handleImportFolder;
+        if (batchDeleteBtn) batchDeleteBtn.onclick = handleBatchDelete;
+        if (batchCancelBtn) batchCancelBtn.onclick = exitSelectionMode;
+
+        const input = document.getElementById('global-search-input');
+        const filterMenu = document.getElementById('filter-menu');
+        const filterToggle = document.getElementById('toggle-filter-menu');
+
+        if (input) {
+            input.oninput = (e) => renderArchiveView(e.target.value);
+        }
+        const recencyBtn = document.getElementById('toggle-recency-filter');
+        if (recencyBtn) {
+            recencyBtn.onclick = (e) => {
+                e.stopPropagation();
+                activeFilters.recency = !activeFilters.recency;
+                recencyBtn.classList.toggle('bg-primary', activeFilters.recency);
+                recencyBtn.classList.toggle('text-white', activeFilters.recency);
+                recencyBtn.classList.toggle('bg-surface-container-low', !activeFilters.recency);
+                recencyBtn.classList.toggle('text-on-surface-variant', !activeFilters.recency);
+                recencyBtn.classList.toggle('shadow-md', activeFilters.recency);
+                // re-render list with recency sorting logic applied
+                const currentInput = document.getElementById('global-search-input');
+                renderArchiveView(currentInput?.value || '');
+            };
+        }
+
+        if (filterToggle && filterMenu) {
+            filterToggle.onclick = (e) => {
+                e.stopPropagation();
+                const isOpen = filterMenu.classList.contains('active');
+                if (isOpen) window.closeFilterMenu();
+                else window.openFilterMenu();
+            };
+        }
+
+        document.querySelectorAll('.filter-option').forEach(opt => {
+            const cat = opt.getAttribute('data-cat');
+            const val = opt.getAttribute('data-val');
+            if (activeFilters[cat].includes(val)) opt.classList.add('selected');
+            opt.onclick = () => {
+                opt.classList.toggle('selected');
+                if (opt.classList.contains('selected')) {
+                    if (!activeFilters[cat].includes(val)) activeFilters[cat].push(val);
+                } else {
+                    activeFilters[cat] = activeFilters[cat].filter(v => v !== val);
+                }
+                updateFilterIndicator();
+                const currentInput = document.getElementById('global-search-input');
+                renderArchiveView(currentInput?.value || '');
+            };
+        });
+
+        const resetBtn = document.getElementById('reset-filters');
+        if (resetBtn) {
+            resetBtn.onclick = () => {
+                resetFilters();
+                const currentInput = document.getElementById('global-search-input');
+                renderArchiveView(currentInput?.value || '');
+            };
+        }
+
+        const applyBtn = document.getElementById('apply-filters-btn');
+        if (applyBtn) {
+            applyBtn.onclick = () => window.closeFilterMenu();
+        }
+
+        const devLink = document.getElementById('dev-github-link');
+        if (devLink) {
+            devLink.onclick = (e) => {
+                e.preventDefault();
+                window.api.openPath('https://github.com/AbdulllrahmanDev');
+            };
+        }
+    }
+
+    const viewAdd = document.getElementById('view-add');
+    const viewArchive = document.getElementById('view-archive');
+    const viewAi = document.getElementById('view-ai');
+    const viewSettings = document.getElementById('view-settings');
+
+    const viewElements = {
+        'add': viewAdd,
+        'archive': viewArchive,
+        'ai': viewAi,
+        'settings': viewSettings
+    };
+
+    // Hide all, then show active
+    Object.keys(viewElements).forEach(view => {
+        const el = viewElements[view];
+        if (el) {
+            if (view === viewName) {
+                el.classList.remove('hidden');
+                // Only trigger fade-in animation if it's actually a DIFFERENT view
+                if (isNewView || isFirstInit) {
+                    el.classList.remove('animate-fade-in');
+                    void el.offsetWidth; // Trigger reflow
+                    el.classList.add('animate-fade-in');
+                }
+            } else {
+                el.classList.add('hidden');
+            }
+        }
+    });
+
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+    const navBtn = document.getElementById(`nav-${viewName}`);
+    if (navBtn) navBtn.classList.add('active');
+
+    moveNavIndicator(viewName);
+
+    if (viewName === 'archive') {
+        window.api.getDocuments().then(docs => {
+            documents = docs || [];
+            const currentInput = document.getElementById('global-search-input');
+            renderArchiveView(currentInput ? currentInput.value : '');
+            buildDynamicFilterMenu(); // Populate filters from real data
+        });
+
+        const insights = document.getElementById('global-insights');
+        const intel = document.getElementById('document-intelligence');
+        if (insights && intel && !isFirstInit) {
+            insights.classList.remove('hidden');
+            intel.classList.add('hidden');
+        }
+
+        const input = document.getElementById('global-search-input');
+    }
+}
+
+function resetFilters() {
+    activeFilters = { type: [], class: [], area: [], year: [], project: [], recency: false };
+    document.querySelectorAll('.filter-option').forEach(o => o.classList.remove('selected'));
+    updateFilterIndicator();
+}
+
+function updateFilterIndicator() {
+    const dot = document.getElementById('filter-indicator');
+    if (dot) {
+        const isFiltered = activeFilters.class.length > 0 || activeFilters.year.length > 0
+            || activeFilters.project.length > 0 || activeFilters.type.length > 0;
+        dot.style.display = isFiltered ? 'block' : 'none';
+    }
+}
+
+// ============================================================
+// SMART SEARCH ENGINE
+// ============================================================
+
+/**
+ * Weighted fuzzy search. Returns a relevance score > 0 if the doc matches,
+ * 0 if it doesn't. Higher = more relevant.
+ */
+function fuzzyScore(doc, term) {
+    if (!term || !term.trim()) return 1; // No query → everything matches
+
+    const tokens = term.trim().toLowerCase().split(/\s+/).filter(t => t.length > 0);
+
+    const fields = [
+        { val: doc.subject || '', weight: 12 },
+        { val: doc.title || '', weight: 10 },
+        { val: doc.version_no || '', weight: 8 },  // رقم الصادر/الوارد
+        { val: doc.project || '', weight: 6 },
+        { val: doc.doc_date || '', weight: 5 },
+        { val: doc.summary || '', weight: 3 },
+        { val: doc.file || '', weight: 2 },
+        { val: doc.content || '', weight: 1 },
+    ];
+
+    let totalScore = 0;
+
+    for (const token of tokens) {
+        let tokenScore = 0;
+        for (const field of fields) {
+            const haystack = field.val.toLowerCase();
+            if (haystack.includes(token)) {
+                // Exact-word bonus: double score when it's a standalone word
+                const wordBoundary = new RegExp(`(^|\\s)${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
+                tokenScore += wordBoundary.test(haystack) ? field.weight * 2 : field.weight;
+            }
+        }
+        if (tokenScore === 0) return 0; // All tokens must match
+        totalScore += tokenScore;
+    }
+
+    return totalScore;
+}
+
+// ============================================================
+// DYNAMIC FILTER MENU BUILDER
+// ============================================================
+
+/**
+ * Reads the current `documents` array and rebuilds the filter panel
+ * with real data: unique years, projects, and file types.
+ */
+function buildDynamicFilterMenu() {
+    const container = document.getElementById('filter-dynamic-sections');
+    if (!container) return;
+
+    const years = new Set();
+    const projects = new Set();
+    const types = new Set();
+    const classes = new Set();
+
+    documents.forEach(doc => {
+        if (doc.doc_date) {
+            let y = String(doc.doc_date);
+            const parts = y.split('-');
+            if (parts.length === 3) {
+                if (parts[0].length === 4) y = parts[0];
+                else if (parts[2].length === 4) y = parts[2];
+            } else if (y.length >= 4) {
+                const match = y.match(/\d{4}/);
+                if (match) y = match[0];
+            }
+            if (y && y.length === 4 && !isNaN(y)) years.add(y);
+        }
+        if (doc.project && !['\u063a\u064a\u0631 \u0645\u062d\u062f\u062f', '\u063a\u064a\u0631_\u0645\u062d\u062f\u062f', 'general', '\u0639\u0627\u0645', ''].includes((doc.project || '').toLowerCase().trim())) {
+            projects.add(doc.project);
+        }
+        if (doc.type) types.add(doc.type);
+        if (doc.class && !['\u0623\u062e\u0631\u0649', '\u0648\u062b\u064a\u0642\u0629', ''].includes((doc.class || '').trim())) {
+            classes.add(doc.class);
+        }
+    });
+
+    const makeSection = (titleLabel, cat, values, icon, labelFn = v => v) => {
+        if (values.length === 0) return '';
+        const sortedValues = (cat === 'year') ? [...values].sort().reverse() : [...values].sort((a, b) => a.localeCompare(b, currentLang === 'ar' ? 'ar' : 'en'));
+
+        return `
+            <div class="filter-section-group" data-cat="${cat}">
+                <div class="filter-section-header">
+                    <div class="filter-section-icon">${getIcon(icon, 'sm')}</div>
+                    <div class="flex-1 flex items-baseline justify-between">
+                        <h4 class="filter-section-title">${titleLabel}</h4>
+                        <span class="text-[9px] font-bold text-primary/30 uppercase tracking-widest">${values.length} ${t('filter_items_suffix')}</span>
+                    </div>
+                </div>
+                <div class="filter-chips-row">
+                    ${sortedValues.map(v => {
+            const isActive = (activeFilters[cat] || []).includes(v);
+            return `<div class="filter-option ${isActive ? 'selected' : ''}" data-cat="${cat}" data-val="${v}">${labelFn(v)}</div>`;
+        }).join('')}
+                </div>
+            </div>`;
+    };
+
+    container.innerHTML = `
+        ${[
+            makeSection(t('filter_type'), 'type', [...types], 'category'),
+            makeSection(t('filter_class'), 'class', [...classes], 'label'),
+            makeSection(t('filter_year'), 'year', [...years], 'calendar_today'),
+            makeSection(t('filter_project'), 'project', [...projects], 'folder'),
+        ].join('')}
+    `;
+
+    // ── Inner search: live-filter chips across all sections ──
+    const searchEl = document.getElementById('filter-inner-search');
+    if (searchEl) {
+        searchEl.oninput = () => {
+            const q = searchEl.value.toLowerCase().trim();
+            container.querySelectorAll('.filter-section-group').forEach(section => {
+                let anyVisible = false;
+                section.querySelectorAll('.filter-option').forEach(chip => {
+                    const match = q === '' || chip.textContent.toLowerCase().includes(q);
+                    chip.style.display = match ? '' : 'none';
+                    if (match) anyVisible = true;
+                });
+                section.style.display = anyVisible ? '' : 'none';
+            });
+        };
+    }
+
+    // ── Re-attach toggle listeners on chips ──
+    container.querySelectorAll('.filter-option').forEach(opt => {
+        const cat = opt.getAttribute('data-cat');
+        const val = opt.getAttribute('data-val');
+        if (!activeFilters[cat]) activeFilters[cat] = [];
+        opt.onclick = () => {
+            opt.classList.toggle('selected');
+            const arr = activeFilters[cat];
+            if (opt.classList.contains('selected')) {
+                if (!arr.includes(val)) arr.push(val);
+            } else {
+                activeFilters[cat] = arr.filter(v => v !== val);
+            }
+            updateFilterIndicator();
+            renderArchiveView(document.getElementById('global-search-input')?.value || '');
+        };
+    });
+}
+
+function getTimeRangeGroup(dateStr) {
+    if (!dateStr) return 'older';
+    const docDate = new Date(dateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const thirtyDaysAgo = new Date(today);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    if (docDate >= today) return 'today';
+    if (docDate >= yesterday) return 'yesterday';
+    if (docDate >= sevenDaysAgo) return 'this_week';
+    if (docDate >= thirtyDaysAgo) return 'this_month';
+    return 'older';
+}
+
+function formatDateWithTime(dateStr) {
+    if (!dateStr) return '';
+    try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+
+        // Check if it's just a date (no 'T' in string usually means old format)
+        if (typeof dateStr === 'string' && !dateStr.includes('T') && !dateStr.includes(':')) {
+            return dateStr; // Preserve old format for legacy records
+        }
+
+        const date = d.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+
+        const time = d.toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true
+        });
+
+        return `${date} | ${time}`;
+    } catch (e) {
+        return dateStr;
+    }
+}
+
+function groupDocumentsByDate(docs) {
+    const groups = {
+        today: [],
+        yesterday: [],
+        this_week: [],
+        this_month: [],
+        older: []
+    };
+    docs.forEach(doc => {
+        const group = getTimeRangeGroup(doc.date_added);
+        groups[group].push(doc);
+    });
+    return Object.keys(groups)
+        .filter(key => groups[key].length > 0)
+        .map(key => ({ key, label: t(key), docs: groups[key] }));
+}
+
+function renderArchiveView(term = '') {
+    const target = document.getElementById('archive-render-target');
+    const totalAssetsEl = document.getElementById('total-assets');
+    if (!target) return;
+
+    // --- Fuzzy search + scoring ---
+    let scored = documents.map(doc => ({ doc, score: fuzzyScore(doc, term) }));
+
+    // Sort by relevance when searching, preserve date order otherwise
+    if (term && term.trim()) {
+        scored.sort((a, b) => b.score - a.score);
+    }
+    let filtered = scored.filter(({ score }) => score > 0).map(({ doc }) => doc);
+
+    // --- Smart dynamic filters ---
+    if (activeFilters.year && activeFilters.year.length > 0)
+        filtered = filtered.filter(d => activeFilters.year.includes(String(d.doc_date || '').split('-')[0]));
+    if (activeFilters.project && activeFilters.project.length > 0)
+        filtered = filtered.filter(d => activeFilters.project.includes(d.project));
+    if (activeFilters.type && activeFilters.type.length > 0)
+        filtered = filtered.filter(d => activeFilters.type.includes(d.type));
+
+    // Sort and Group by date_added when recency is active
+    let groupedData = null;
+    if (activeFilters.recency) {
+        filtered.sort((a, b) => new Date(b.date_added) - new Date(a.date_added));
+        groupedData = groupDocumentsByDate(filtered);
+    }
+
+    if (activeFilters.class && activeFilters.class.length > 0)
+        filtered = filtered.filter(d => activeFilters.class.includes(d.class));
+
+    if (totalAssetsEl) totalAssetsEl.innerText = filtered.length;
+
+    if (!isSelectionMode) selectedDocIds.clear();
+
+    if (archiveLayout === 'grid') {
+        renderArchiveGrid(groupedData || filtered, target, !!groupedData);
+    } else {
+        renderArchiveList(groupedData || filtered, target, !!groupedData);
+    }
+
+    const gridToggle = document.getElementById('toggle-grid-view');
+    const listToggle = document.getElementById('toggle-list-view');
+    if (gridToggle) gridToggle.classList.toggle('active', archiveLayout === 'grid');
+    if (listToggle) listToggle.classList.toggle('active', archiveLayout === 'list');
+
+    const controls = document.getElementById('selection-controls');
+    const clearBtn = document.getElementById('clear-archive-btn');
+    if (controls) controls.classList.toggle('hidden', !isSelectionMode);
+    if (clearBtn) {
+        clearBtn.classList.toggle('text-error', isSelectionMode);
+        clearBtn.classList.toggle('opacity-100', isSelectionMode);
+    }
+}
+
+function renderArchiveGrid(data, container, isGrouped = false) {
+    if (isGrouped ? data.length === 0 : data.length === 0) {
+        container.innerHTML = `<div class="p-12 text-center text-on-surface-variant opacity-50">${t('archive_empty')}</div>`;
+        return;
+    }
+
+    let html = '<div class="curator-grid">';
+
+    if (isGrouped) {
+        data.forEach(group => {
+            html += `
+                <div class="col-span-full py-4 flex items-center gap-3">
+                    <h3 class="timeline-group-title text-xs font-black uppercase tracking-widest text-on-surface/60">${group.label}</h3>
+                    <div class="h-[1px] flex-1 bg-outline-variant/10"></div>
+                    <span class="text-[10px] font-bold text-primary/40 bg-primary/5 px-2 py-0.5 rounded-full">${group.docs.length}</span>
+                </div>
+            `;
+            html += group.docs.map(doc => renderGridCard(doc)).join('');
+        });
+    } else {
+        html += data.map(doc => renderGridCard(doc)).join('');
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    // Attach deletion listeners
+    container.querySelectorAll('.delete-doc-btn').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            const id = btn.getAttribute('data-id');
+            const path = btn.getAttribute('data-path');
+            handleDeleteDocument(id, path);
+        };
+    });
+}
+
+function renderGridCard(doc) {
+    const isSelected = selectedDocIds.has(doc.id.toString());
+    const typeIcon = getIconForType(doc.type);
+    return `
+        <div class="curator-card group cursor-pointer relative overflow-hidden bg-surface-container-lowest border border-outline-variant/10 rounded-[2rem] transition-all duration-500 hover:border-primary/40 hover:-translate-y-2 hover:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.12)] ${isSelected ? 'ring-2 ring-primary border-primary' : ''}" 
+            onclick="handleDocClick(event, '${doc.id}')" 
+            ondblclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')"
+            data-doc-id="${doc.id}">
+            
+            <div class="card-preview h-48 bg-surface-container-low/50 relative flex items-center justify-center overflow-hidden">
+                <div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-secondary/5 opacity-50"></div>
+                <div class="relative z-10 transition-all duration-700 group-hover:scale-110 flex flex-col items-center gap-3">
+                    <div class="px-5 py-3 rounded-2xl bg-white/80 backdrop-blur-md shadow-lg flex items-center justify-center text-primary font-black text-xs border border-white/40 tracking-widest">
+                        ${/sader|صادر/i.test(doc.type || '') ? (currentLang === 'ar' ? 'صادر' : 'OUT') : 
+                          /wared|وارد/i.test(doc.type || '') ? (currentLang === 'ar' ? 'وارد' : 'INC') : 
+                          (currentLang === 'ar' ? 'عام' : 'GEN')}
+                     </div>
+                     <span class="text-[8px] font-black text-on-surface-variant/20 uppercase tracking-[0.2em]">${(doc.file || '').split('.').pop().toUpperCase()}</span>
+                </div>
+                
+                ${!isSelectionMode ? `
+                    <div class="absolute top-4 right-4 z-20">
+                        <button class="delete-doc-btn w-10 h-10 flex items-center justify-center text-on-surface-variant/40 hover:text-error bg-white/80 backdrop-blur-md rounded-xl border border-white/40 shadow-sm transition-all opacity-0 group-hover:opacity-100 hover:scale-110 active:scale-95" data-id="${doc.id}" data-path="${escPath(doc.file_path)}" type="button">
+                            ${getIcon('delete', 'sm')}
+                        </button>
+                    </div>
+                ` : `
+                    <div class="absolute top-4 right-4 z-20">
+                        <input type="checkbox" class="w-6 h-6 rounded-lg border-outline-variant/30 text-primary focus:ring-primary pointer-events-none shadow-sm" ${isSelected ? 'checked' : ''}>
+                    </div>
+                `}
+                
+                <!-- Removed bottom label as it is now in the center -->
+            </div>
+
+            <div class="card-content p-6 flex flex-col gap-4">
+                <div class="space-y-2">
+                    <h4 class="font-headline font-bold text-on-surface text-lg leading-snug line-clamp-2 transition-colors group-hover:text-primary">${doc.title}</h4>
+                    <div class="flex flex-wrap gap-2">
+                        ${doc.project ? `<span class="px-2 py-0.5 bg-surface-container-low text-on-surface-variant/60 text-[9px] font-black uppercase tracking-widest rounded-md">${doc.project}</span>` : ''}
+                    </div>
+                </div>
+                
+                <div class="pt-4 border-t border-outline-variant/5 flex items-center justify-between mt-auto">
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-black text-on-surface-variant/30 uppercase tracking-[0.2em]">${doc.doc_date || formatDateWithTime(doc.date_added)}</span>
+                        ${doc.version_no && doc.version_no !== '1.0' ? `
+                        <span class="text-[9px] font-bold text-primary/40 mt-0.5">${currentLang === 'ar' ? 'الرقم' : 'No.'} ${doc.version_no}</span>
+                        ` : ''}
+                    </div>
+                    <div class="w-8 h-8 rounded-full bg-primary/5 text-primary flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all flip-rtl">
+                        ${getIcon('arrow_outward', 'xs')}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderArchiveList(data, container, isGrouped = false) {
+    if (isGrouped ? data.length === 0 : data.length === 0) {
+        container.innerHTML = `<div class="p-12 text-center text-on-surface-variant opacity-50">${t('archive_empty')}</div>`;
+        return;
+    }
+
+    let html = `<div class="bg-surface-container-lowest rounded-3xl editorial-shadow overflow-hidden border border-outline-variant/10 divide-y divide-outline-variant/5">`;
+
+    if (!isGrouped) {
+        html += `
+            <div class="grid grid-cols-12 px-8 py-5 text-[0.65rem] font-black uppercase tracking-[0.2em] text-on-surface-variant/40 font-label">
+                <div class="col-span-8 flex items-center gap-4">
+                    ${isSelectionMode ? '<div class="w-5"></div>' : ''}
+                    ${t('asset_intel')}
+                </div>
+                <div class="col-span-4 text-right rtl:text-left">${t('archived')}</div>
+            </div>
+        `;
+        html += data.map(doc => renderListRow(doc)).join('');
+    } else {
+        data.forEach(group => {
+            html += `
+                <div class="px-8 py-4 bg-surface-container-low/30 flex items-center justify-between border-b border-outline-variant/5">
+                    <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface/40 font-label">${group.label}</h3>
+                    <span class="text-[10px] font-bold text-primary/40 bg-primary/10 px-2 py-0.5 rounded-full">${group.docs.length}</span>
+                </div>
+            `;
+            html += group.docs.map(doc => renderListRow(doc)).join('');
+        });
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    // Attach deletion listeners
+    container.querySelectorAll('.delete-doc-btn').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            const id = btn.getAttribute('data-id');
+            const path = btn.getAttribute('data-path');
+            handleDeleteDocument(id, path);
+        };
+    });
+}
+
+function renderListRow(doc) {
+    const isSelected = selectedDocIds.has(doc.id.toString());
+    const typeIcon = getIconForType(doc.type);
+    return `
+        <div class="grid grid-cols-12 px-10 py-7 items-center hover:bg-surface-container-low transition-all cursor-pointer group ${isSelected ? 'bg-primary/5' : ''}" 
+            onclick="handleDocClick(event, '${doc.id}')"
+            ondblclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
+            <div class="col-span-8 flex items-center gap-6">
+                ${isSelectionMode ? `
+                    <input type="checkbox" class="w-6 h-6 rounded-lg border-outline-variant/30 text-primary focus:ring-primary pointer-events-none" ${isSelected ? 'checked' : ''}>
+                ` : ''}
+                <div class="w-14 h-14 flex-shrink-0 bg-surface-container-low rounded-2xl flex items-center justify-center border border-outline-variant/10 shadow-sm transition-all group-hover:scale-105 active:scale-95 group-hover:border-primary/20">
+                    <span class="text-[10px] font-black text-primary/60 group-hover:text-primary transition-colors">
+                        ${/sader|صادر/i.test(doc.type || '') ? (currentLang === 'ar' ? 'صادر' : 'SDR') : 
+                          /wared|وارد/i.test(doc.type || '') ? (currentLang === 'ar' ? 'وارد' : 'WRD') : 
+                          (currentLang === 'ar' ? 'عام' : 'GEN')}
+                    </span>
+                </div>
+                <div class="min-w-0">
+                    <h4 class="font-bold text-on-surface text-lg leading-snug group-hover:text-primary transition-colors truncate max-w-[500px] mb-1">${doc.title}</h4>
+                    <div class="flex items-center gap-3">
+                        <span class="text-[9px] font-black text-on-surface-variant/30 uppercase tracking-widest">${(doc.file || '').split('.').pop().toUpperCase()}</span>
+                        ${doc.project ? `<span class="text-[9px] font-black text-primary/50 uppercase tracking-widest">• ${doc.project}</span>` : ''}
+                        <span class="text-[9px] font-black text-on-surface-variant/20 uppercase tracking-widest">• ${doc.doc_date || formatDateWithTime(doc.date_added)}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-span-4 flex items-center justify-end gap-10">
+                ${!isSelectionMode ? `
+                    <button class="delete-doc-btn w-10 h-10 flex items-center justify-center text-on-surface-variant/20 hover:text-error bg-transparent hover:bg-error/5 rounded-xl transition-all opacity-0 group-hover:opacity-100" data-id="${doc.id}" data-path="${escPath(doc.file_path)}">
+                        ${getIcon('delete', 'sm')}
+                    </button>
+                ` : ''}
+                <div class="flex flex-col items-end text-right">
+                    <span class="text-[10px] font-black text-on-surface-variant/40 uppercase tracking-widest">${formatDateWithTime(doc.date_added)}</span>
+                    ${doc.version_no && doc.version_no !== '1.0' ? `<span class="text-[9px] font-bold text-primary/30 mt-0.5">${currentLang === 'ar' ? 'الرقم' : 'No.'} ${doc.version_no}</span>` : ''}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+async function handleFileSelection() {
+    const files = await window.api.selectFiles();
+    if (files && files.length > 0) {
+        const newFiles = files.filter(f => !pendingFiles.some(pf => pf.path === f.path));
+        pendingFiles = [...pendingFiles, ...newFiles];
+        enterStagingState();
+    }
+}
+
+function enterStagingState() {
+    const wrapper = document.getElementById('upload-wrapper');
+    const stagingArea = document.getElementById('staging-area');
+    const heroHeader = document.getElementById('hero-header');
+    const hint = document.getElementById('ready-hint');
+    const icon = document.getElementById('upload-icon');
+
+    if (wrapper) wrapper.classList.add('staging-active');
+    if (stagingArea) stagingArea.classList.add('visible');
+    if (heroHeader) {
+        heroHeader.style.opacity = '0';
+        heroHeader.style.maxHeight = '0';
+        heroHeader.style.marginBottom = '0';
+    }
+    if (hint) hint.style.opacity = '0';
+    const iconWrapper = document.getElementById('upload-icon-container');
+    if (iconWrapper) iconWrapper.innerHTML = getIcon('cloud_upload', 'xl');
+
+    // Reset toggles
+    forceAiForNextUpload = false;
+    manualSplitForNextUpload = false;
+
+    const forceToggle = document.getElementById('force-ai-toggle');
+    if (forceToggle) {
+        forceToggle.classList.remove('bg-primary', 'text-white', 'shadow-md');
+        forceToggle.classList.add('bg-surface-container-low', 'text-on-surface-variant');
+        forceToggle.onclick = async (e) => {
+            e.stopPropagation();
+            if (!forceAiForNextUpload) {
+                // Turning ON — require password
+                const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'تحليل ذكي مطلوب — أدخل كلمة السر لتفعيل الذكاء الاصطناعي' : 'AI Analysis required — enter password to enable');
+                if (!unlocked) return;
+            }
+            forceAiForNextUpload = !forceAiForNextUpload;
+            if (forceAiForNextUpload) {
+                forceToggle.classList.remove('bg-surface-container-low', 'text-on-surface-variant');
+                forceToggle.classList.add('bg-primary', 'text-white', 'shadow-md');
+            } else {
+                forceToggle.classList.remove('bg-primary', 'text-white', 'shadow-md');
+                forceToggle.classList.add('bg-surface-container-low', 'text-on-surface-variant');
+            }
+            updatePipelineUI();
+        };
+    }
+
+    const splitToggle = document.getElementById('manual-split-toggle');
+    if (splitToggle) {
+        splitToggle.classList.remove('bg-primary', 'text-white', 'shadow-md');
+        splitToggle.classList.add('bg-surface-container-low', 'text-on-surface-variant');
+        splitToggle.onclick = async (e) => {
+            e.stopPropagation();
+            // Password protection removed as per user request
+            // if (!(await requestFeatureUnlock())) return;
+
+
+            manualSplitForNextUpload = !manualSplitForNextUpload;
+            if (manualSplitForNextUpload) {
+                splitToggle.classList.remove('bg-surface-container-low', 'text-on-surface-variant');
+                splitToggle.classList.add('bg-primary', 'text-white', 'shadow-md');
+            } else {
+                splitToggle.classList.remove('bg-primary', 'text-white', 'shadow-md');
+                splitToggle.classList.add('bg-surface-container-low', 'text-on-surface-variant');
+            }
+            updatePipelineUI();
+        };
+    }
+
+    renderPendingList();
+
+    const confirmBtn = document.getElementById('confirm-upload-btn');
+    if (confirmBtn) confirmBtn.onclick = confirmUploads;
+
+    const cancelBtn = document.getElementById('cancel-upload-btn');
+    if (cancelBtn) cancelBtn.onclick = resetAddView;
+}
+
+function resetAddView() {
+    pendingFiles = [];
+
+    resetLoadingState();
+
+    const wrapper = document.getElementById('upload-wrapper');
+    const stagingArea = document.getElementById('staging-area');
+    const heroHeader = document.getElementById('hero-header');
+    const hint = document.getElementById('ready-hint');
+    const iconWrapper = document.getElementById('upload-icon-container');
+    const pendingList = document.getElementById('pending-list');
+    const confirmBtn = document.getElementById('confirm-upload-btn');
+    const cancelBtn = document.getElementById('cancel-upload-btn');
+
+    if (wrapper) wrapper.classList.remove('staging-active');
+    if (stagingArea) stagingArea.classList.remove('visible');
+    if (heroHeader) {
+        heroHeader.style.opacity = '';
+        heroHeader.style.maxHeight = '';
+        heroHeader.style.marginBottom = '';
+    }
+    if (hint) hint.style.opacity = '';
+    if (iconWrapper) iconWrapper.innerHTML = getIcon('add', 'xl');
+    if (pendingList) pendingList.innerHTML = '';
+    if (confirmBtn) confirmBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+
+    const upBtn = document.getElementById('main-upload-btn');
+    if (upBtn) {
+        upBtn.classList.remove('btn-loading');
+        upBtn.onclick = handleFileSelection;
+    }
+}
+
+async function confirmUploads() {
+    if (pendingFiles.length === 0) return;
+
+    // UI Loading State
+    const confirmBtn = document.getElementById('confirm-upload-btn');
+    const cancelBtn = document.getElementById('cancel-upload-btn');
+    const mainUploadBtn = document.getElementById('main-upload-btn');
+    const iconContainer = document.getElementById('upload-icon-container');
+
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    // Removed loading state logic as per user request
+
+    console.log("Archive sequence started for", pendingFiles.length, "files");
+    // Removed showToast as per user request
+
+    // Immediate UI feedback: Activate pipeline step 1
+    const pipeline = document.getElementById('pipeline-visualizer');
+    if (pipeline) {
+        resetPipeline();
+        updatePipelineUI();
+        pipeline.classList.remove('pipeline-exit', 'success');
+        pipeline.classList.add('active');
+        setStepActive('step-upload');
+    }
+
+    try {
+        const result = await window.api.processUploads(pendingFiles, forceAiForNextUpload, manualSplitForNextUpload);
+        console.log("Backend process-uploads result:", result);
+
+        if (result && result.success) {
+
+            resetAddView();
+
+            const statusActions = document.getElementById('status-actions');
+            if (statusActions) statusActions.classList.remove('hidden');
+        } else {
+            console.error("Archive failed: Result unsuccessful", result);
+            // Keep error toast for visibility
+            showToast("Error processing files.", {}, 3000);
+            resetLoadingState();
+        }
+    } catch (err) {
+        console.error("Fatal error during confirmUploads:", err);
+        showToast("System error. Check console.", {}, 3000);
+        resetLoadingState();
+    }
+}
+
+function resetLoadingState() {
+    const confirmBtn = document.getElementById('confirm-upload-btn');
+    const cancelBtn = document.getElementById('cancel-upload-btn');
+    const mainUploadBtn = document.getElementById('main-upload-btn');
+    const iconContainer = document.getElementById('upload-icon-container');
+
+    if (confirmBtn) confirmBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+    if (mainUploadBtn) mainUploadBtn.classList.remove('btn-loading');
+    if (iconContainer) {
+        // Reset back to original '+' icon
+        iconContainer.innerHTML = getIcon('add', 'xl');
+    }
+}
+
+function renderPendingList() {
+    const container = document.getElementById('pending-list');
+    if (!container) return;
+    container.innerHTML = pendingFiles.map((file, index) => {
+        const ext = file.name.split('.').pop().toLowerCase();
+        const icon = (ext === 'pdf') ? 'pdf' : 'image';
+        return `
+            <div class="px-10 py-6 flex items-center justify-between group transition-all hover:bg-surface-container-low/30 rounded-2xl mx-2">
+                <div class="flex items-center gap-6">
+                    <div class="w-12 h-12 bg-surface-container-low rounded-xl flex items-center justify-center text-primary border border-outline-variant/10 shadow-sm cursor-pointer hover:scale-110 active:scale-95 transition-all" onclick="openPreview('${escPath(file.path)}', '${ext}', '${(file.name || '').replace(/'/g, "\\'")}')" title="${currentLang === 'ar' ? 'معاينة الملف' : 'Preview File'}">
+                        ${getIcon(icon, 'sm')}
+                    </div>
+                    <div>
+                        <p class="text-md font-bold text-on-surface truncate max-w-lg mb-1">${file.name}</p>
+                        <div class="flex items-center gap-2">
+                            <span class="text-[9px] font-black text-on-surface-variant/40 uppercase tracking-widest">${(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                            <span class="text-[9px] font-black text-primary/30 uppercase tracking-widest">• Pending Review</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="w-10 h-10 flex items-center justify-center text-on-surface-variant/20 hover:text-error hover:bg-error/5 rounded-xl transition-all opacity-0 group-hover:opacity-100" onclick="pendingFiles.splice(${index}, 1); renderPendingList(); if(pendingFiles.length === 0) resetAddView();">
+                    ${getIcon('delete', 'sm')}
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+// --- AI / Analytics Logic Removed as standalone search is merged ---
+
+function selectDocument(id, isSoftUpdate = false) {
+    activeDocId = id; // Update active tracker
+    const doc = documents.find(d => d.id == id);
+    if (!doc) return;
+
+    const isProcessing = doc.status === 'processing';
+
+    const animationClass = isSoftUpdate ? 'content-update-fade' : 'animate-fade-in';
+
+    const detailHTML = `
+        <div class="space-y-6 ${animationClass} pb-12">
+            <!-- Premium Metadata Header -->
+            <div class="space-y-6">
+                <div class="flex items-center gap-3">
+                    ${(doc.governorate && doc.governorate !== 'غير_محددة') ? `
+                    <span class="px-3 py-1.5 bg-primary/10 text-primary text-[10px] font-black rounded-xl uppercase tracking-widest border border-primary/20 shadow-sm">
+                        ${doc.governorate}
+                    </span>` : (isProcessing ? `
+                    <span class="px-3 py-1.5 bg-primary/10 text-primary text-[10px] font-black rounded-xl uppercase tracking-widest border border-primary/20 animate-pulse">
+                        ANALYZING...
+                    </span>` : '')}
+                    ${!isProcessing && doc.class ? `
+                    <span class="px-3 py-1.5 bg-surface-container-high text-on-surface-variant text-[10px] font-black rounded-xl tracking-widest border border-outline-variant/10 shadow-sm">
+                        ${doc.class}
+                    </span>` : ''}
+                    <span class="h-px flex-1 bg-outline-variant/10"></span>
+                </div>
+                
+                <!-- عنوان الملف (Main Title Area) -->
+                <div id="field-title-${doc.id}" class="transition-all group/title relative cursor-context-menu border border-transparent rounded-[2rem]">
+                    <div class="title-edit-header hidden items-center gap-2 mb-3 px-5 pt-5">
+                        <div class="text-primary">${getIcon('edit_note', 'xs')}</div>
+                        <span class="text-[10px] font-black uppercase tracking-widest text-primary">${currentLang === 'ar' ? 'تعديل العنوان' : 'Edit Title'}</span>
+                    </div>
+
+                    <h2 class="field-value font-headline font-black text-3xl tracking-tight text-on-surface leading-tight break-anywhere px-0 transition-all group-hover/title:text-primary"
+                        oncontextmenu="event.preventDefault(); !${isProcessing} && openFieldEditor(this.parentElement, '${doc.id}', 'title', \`${(doc.title || '').trim().replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'العنوان' : 'Title'}')"
+                        title="${!isProcessing ? (currentLang === 'ar' ? 'كليك يمين للتعديل' : 'Right-click to edit') : ''}">
+                        ${isProcessing ? (doc.file?.replace(/\.pdf$/i, '').replace(/[_-]/g, '/') || 'Intelligence Extraction...') : (doc.title || '').trim()}
+                    </h2>
+                </div>
+                
+                ${!isProcessing ? `
+                <!-- ===== ركن البيانات الإدارية (Smart Administrative Data) ===== -->
+                <div class="mt-8 space-y-4">
+                    <div class="flex items-center gap-3 mb-6">
+                        <span class="text-xs font-black uppercase tracking-[0.3em] text-primary">${currentLang === 'ar' ? 'البيانات التحليلية' : 'Analytical Data'}</span>
+                        <div class="h-px flex-1 bg-gradient-to-r from-primary/20 to-transparent"></div>
+                    </div>
+
+                    <!-- الموضوع -->
+                    <div id="field-subject-${doc.id}" class="p-5 rounded-3xl bg-surface-container-lowest border border-outline-variant/10 shadow-sm hover:border-primary/40 transition-all group/field cursor-context-menu" oncontextmenu="event.preventDefault(); openFieldEditor(this, '${doc.id}', 'subject', \`${(doc.subject || '').replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'الموضوع' : 'Subject'}')">
+                        <div class="flex items-center gap-3 mb-2">
+                            <div class="w-8 h-8 rounded-lg bg-primary/5 text-primary/40 group-hover/field:text-primary transition-colors flex items-center justify-center">${getIcon('subject', 'sm')}</div>
+                            <span class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/30">${currentLang === 'ar' ? 'الموضوع' : 'Subject'}</span>
+                        </div>
+                        <p class="field-value text-lg font-bold text-on-surface leading-relaxed">${doc.subject || '—'}</p>
+                    </div>
+
+                    <!-- المشروع / الجهة -->
+                    <div id="field-project-${doc.id}" class="p-5 rounded-3xl bg-surface-container-lowest border border-outline-variant/10 shadow-sm hover:border-primary/40 transition-all group/field cursor-context-menu" oncontextmenu="event.preventDefault(); openFieldEditor(this, '${doc.id}', 'project', \`${(doc.project || '').replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'المشروع / الجهة' : 'Project / Entity'}')">
+                        <div class="flex items-center gap-3 mb-2">
+                            <div class="w-8 h-8 rounded-lg bg-secondary/5 text-secondary/40 group-hover/field:text-secondary transition-colors flex items-center justify-center">${getIcon('folder_managed', 'sm')}</div>
+                            <span class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/30">${currentLang === 'ar' ? 'المشروع / الجهة' : 'Project / Entity'}</span>
+                        </div>
+                        <p class="field-value text-lg font-bold text-on-surface leading-relaxed">${doc.project || '—'}</p>
+                    </div>
+
+                    <div id="row-date-number" class="grid grid-cols-1 md:grid-cols-2 gap-4 transition-all duration-500 date-ref-row">
+                        <!-- التاريخ -->
+                        <div id="field-doc_date-${doc.id}" class="p-6 rounded-3xl bg-surface-container-lowest border border-outline-variant/10 shadow-sm hover:border-primary/40 transition-all group/field cursor-context-menu" oncontextmenu="event.preventDefault(); openFieldEditor(this, '${doc.id}', 'doc_date', '${doc.doc_date || ''}', '${currentLang === 'ar' ? 'التاريخ' : 'Date'}')">
+                            <span class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/30 mb-2 block">${currentLang === 'ar' ? 'التاريخ' : 'Date'}</span>
+                            <p class="field-value text-sm font-black text-on-surface font-mono">${doc.doc_date || '—'}</p>
+                        </div>
+                        <!-- الرقم -->
+                        <div id="field-version_no-${doc.id}" class="p-6 rounded-3xl bg-surface-container-lowest border border-outline-variant/10 shadow-sm hover:border-primary/40 transition-all group/field cursor-context-menu" oncontextmenu="event.preventDefault(); openFieldEditor(this, '${doc.id}', 'version_no', '${doc.version_no || ''}', '${currentLang === 'ar' ? 'الرقم' : 'Reference'}')">
+                            <span class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/30 mb-2 block">${currentLang === 'ar' ? 'الرقم' : 'Reference'}</span>
+                            <p class="field-value text-sm font-black text-primary">${doc.version_no || '—'}</p>
+                        </div>
+                    </div>
+
+                    <!-- مسار الملف -->
+                    <div class="p-5 rounded-3xl bg-surface-container-low/50 border border-outline-variant/10 group/field">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/30">${t('file_path')}</span>
+                            <button class="w-8 h-8 flex items-center justify-center text-on-surface-variant/20 hover:text-primary hover:bg-primary/5 rounded-xl transition-all" onclick="copyToClipboard('${escPath(doc.file_path)}', this)" title="${t('copy_path')}">
+                                ${getIcon('content_copy', 'xs')}
+                            </button>
+                        </div>
+                        <p class="text-[10px] font-bold text-on-surface-variant/40 break-all leading-loose opacity-60 mb-3">${doc.file_path}</p>
+                        <button class="w-full py-3 flex items-center justify-center gap-2 bg-secondary/5 text-secondary text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-secondary/10 transition-all border border-secondary/10" onclick="window.api.showItemInFolder('${escPath(doc.file_path)}')">
+                            ${getIcon('folder', 'xs')}
+                            <span>${t('open_folder')}</span>
+                        </button>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+            
+            <!-- ملخص المحتوى (Content Summary) -->
+            <div id="field-summary-${doc.id}" class="p-8 bg-gradient-to-br from-primary/5 to-secondary/5 rounded-[2.5rem] border border-primary/10 group/summary hover:shadow-xl hover:shadow-primary/5 transition-all cursor-context-menu" 
+                oncontextmenu="event.preventDefault(); !${isProcessing} && openFieldEditor(this, '${doc.id}', 'summary', \`${(doc.summary || '').replace(/`/g, "'")}\`, '${currentLang === 'ar' ? 'ملخص المحتوى' : 'Content Summary'}')">
+                <div class="flex items-center gap-3 mb-6">
+                    <div class="w-10 h-10 rounded-2xl bg-white flex items-center justify-center text-primary shadow-sm">${getIcon('article', 'sm')}</div>
+                    <span class="text-[11px] font-black uppercase tracking-[0.2em] text-primary">${currentLang === 'ar' ? 'ملخص المحتوى' : 'Content Summary'}</span>
+                </div>
+                
+                ${isProcessing ? `
+                    <div class="space-y-4">
+                        <div class="h-4 w-full bg-primary/10 rounded-full animate-pulse"></div>
+                        <div class="h-4 w-5/6 bg-primary/10 rounded-full animate-pulse"></div>
+                        <div class="h-4 w-4/6 bg-primary/10 rounded-full animate-pulse"></div>
+                    </div>
+                ` : `
+                    <div class="field-value text-[15px] leading-relaxed text-on-surface font-bold italic opacity-80" dir="auto">
+                        "${doc.summary || (currentLang === 'ar' ? 'لا يوجد ملخص متاح حالياً لهذه الوثيقة.' : 'No summary available for this document.')}"
+                    </div>
+                `}
+            </div>
+
+            <!-- Action Controls -->
+            <div class="space-y-6 pt-4">
+                <div class="grid grid-cols-1 gap-4">
+                    <button class="w-full py-6 bg-primary text-white text-[11px] font-black uppercase tracking-[0.3em] rounded-3xl shadow-xl shadow-primary/20 hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-4" 
+                        onclick="openPreview('${escPath(doc.file_path)}', '${doc.type}', '${doc.title.replace(/'/g, "\\'")}')">
+                        ${getIcon('arrow_outward', 'sm')}
+                        <span>${t('open_file')}</span>
+                    </button>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <button class="py-5 border border-outline-variant/20 text-on-surface-variant text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-surface-container-low transition-all export-action-btn flex items-center justify-center gap-3">
+                            ${getIcon('sync', 'sm')}
+                            <span>${t('export')}</span>
+                        </button>
+                        
+                        ${isProcessing ? `
+                        <button id="stop-analyze-btn" class="py-5 bg-error text-white text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-error/80 transition-all flex items-center justify-center gap-3 animate-pulse">
+                            ${getIcon('stop', 'sm')}
+                            <span>${currentLang === 'ar' ? 'إيقاف' : 'Stop'}</span>
+                        </button>
+                        ` : `
+                        <button id="re-analyze-btn" class="py-5 bg-primary/10 text-primary text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-primary/20 transition-all flex items-center justify-center gap-3 ${_autoAnalysisEnabled ? '' : 'opacity-20 cursor-not-allowed'}" ${_autoAnalysisEnabled ? '' : 'disabled'}>
+                            ${getIcon('auto_awesome', 'sm')}
+                            <span>${currentLang === 'ar' ? 'تحليل ذكي' : 'AI Analysis'}</span>
+                        </button>
+                        `}
+                    </div>
+                </div>
+                <div class="text-center">
+                    <span class="text-[9px] font-black text-on-surface-variant/30 uppercase tracking-[0.3em]">${t('last_analyzed')}: ${formatDateWithTime(doc.date_added)}</span>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const insights = document.getElementById('global-insights');
+    const intel = document.getElementById('document-intelligence');
+    detailsContainer = document.getElementById('sidebar-doc-details');
+
+    if (insights && intel && detailsContainer) {
+        insights.classList.add('hidden');
+        intel.classList.remove('hidden');
+        detailsContainer.innerHTML = detailHTML;
+    }
+
+    if (detailsContainer) {
+        const exportBtn = detailsContainer.querySelector('.export-action-btn');
+        if (exportBtn) {
+            exportBtn.onclick = async () => {
+                const fileName = doc.file_path.split(/[\\/]/).pop();
+                const result = await window.api.exportFile(doc.file_path, fileName);
+                if (result.success) {
+                    showToast("exported_msg");
+                }
+            };
+        }
+
+        const reanalyzeBtn = detailsContainer.querySelector('#re-analyze-btn');
+        if (reanalyzeBtn && !isProcessing) {
+            reanalyzeBtn.onclick = async (e) => {
+                e.stopPropagation();
+                if (!_autoAnalysisEnabled) {
+                    showToast(currentLang === 'ar' ? 'يرجى تفعيل التحليل الذكي من الإعدادات أولاً' : 'Please enable AI Analysis in settings first');
+                    return;
+                }
+                // Require AI password
+                const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لإعادة التحليل بالذكاء الاصطناعي' : 'Enter password to run AI re-analysis');
+                if (!unlocked) return;
+
+                // Play visual feedback immediately
+                reanalyzeBtn.classList.add('bg-primary/20', 'scale-95');
+                setTimeout(() => reanalyzeBtn.classList.remove('bg-primary/20', 'scale-95'), 150);
+
+                showToast(currentLang === 'ar' ? 'جاري الفحص الدقيق...' : 'Running Deep Intelligence Scan...', {}, 3000);
+
+                await window.api.reprocessDocument(doc.id, doc.file_path);
+
+                // Switch local UI instantly while waiting for backend
+                doc.status = 'processing';
+                selectDocument(doc.id, true); // use soft update
+            };
+        }
+
+        const stopBtn = detailsContainer.querySelector('#stop-analyze-btn');
+        if (stopBtn && isProcessing) {
+            stopBtn.onclick = async (e) => {
+                e.stopPropagation();
+                stopBtn.classList.add('bg-error/20', 'scale-95');
+                setTimeout(() => stopBtn.classList.remove('bg-error/20', 'scale-95'), 150);
+
+                await window.api.stopProcessing(doc.id);
+
+                // Switch local UI back to idle
+                doc.status = 'idle';
+                selectDocument(doc.id, true);
+            };
+        }
+
+        // Duplication removed
+    }
+    if (insightRail) insightRail.classList.add('translate-x-full');
+}
+
+
+
+// ============================================================
+// INLINE FIELD EDITOR (Right-click to edit)
+// ============================================================
+window.openFieldEditor = async function (cardEl, docId, fieldKey, currentValue, fieldLabel) {
+    // Prevent double-opening
+    if (cardEl.querySelector('input, textarea, select')) return;
+
+    cardEl.classList.add('is-editing');
+
+    const valueEl = cardEl.querySelector('.field-value');
+    if (!valueEl) return;
+
+    const isMultiline = ['subject', 'project', 'summary'].includes(fieldKey);
+
+    let inputEl;
+    let customDropdown;
+    if (fieldKey === 'doc_date') {
+        const dateContainer = document.createElement('div');
+        dateContainer.className = 'flex gap-2 mt-2';
+
+        // Parse current value (Handles YYYY-MM-DD and DD-MM-YYYY)
+        let y = '', m = '', d = '';
+        if (currentValue && currentValue.includes('-')) {
+            const parts = currentValue.split('-');
+            if (parts[0].length === 4) {
+                // YYYY-MM-DD
+                y = parts[0];
+                m = parts[1];
+                d = parts[2];
+            } else if (parts[2]?.length === 4) {
+                // DD-MM-YYYY
+                d = parts[0];
+                m = parts[1];
+                y = parts[2];
+            } else {
+                y = parts[0]; m = parts[1]; d = parts[2];
+            }
+        }
+
+        const createSelect = (placeholder, current, options) => {
+            const sel = document.createElement('select');
+            sel.className = 'flex-1 bg-surface-container-highest text-[10px] font-bold text-on-surface outline-none border border-primary/20 rounded-lg px-1.5 py-1.5 transition-all focus:border-primary/60 cursor-pointer appearance-none text-center hover:bg-surface-container-high';
+
+            const pOpt = document.createElement('option');
+            pOpt.value = '';
+            pOpt.textContent = placeholder;
+            pOpt.disabled = true;
+            pOpt.selected = !current;
+            sel.appendChild(pOpt);
+
+            options.forEach(opt => {
+                const o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                o.selected = (opt == current);
+                sel.appendChild(o);
+            });
+            return sel;
+        };
+
+        const yearsList = [];
+        const currentYear = new Date().getFullYear();
+        for (let i = currentYear + 5; i >= 1950; i--) yearsList.push(i.toString());
+
+        const monthsList = [];
+        for (let i = 1; i <= 12; i++) monthsList.push(i.toString().padStart(2, '0'));
+
+        const daysList = [];
+        for (let i = 1; i <= 31; i++) daysList.push(i.toString().padStart(2, '0'));
+
+        const selY = createSelect(currentLang === 'ar' ? 'السنة' : 'Year', y, yearsList);
+        const selM = createSelect(currentLang === 'ar' ? 'الشهر' : 'Month', m, monthsList);
+        const selD = createSelect(currentLang === 'ar' ? 'اليوم' : 'Day', d, daysList);
+
+        // Order: Year -> Month -> Day (Standard)
+        // In RTL mode, Flexbox handles visual order if we just append
+        dateContainer.appendChild(selY);
+        dateContainer.appendChild(selM);
+        dateContainer.appendChild(selD);
+
+        inputEl = {
+            _isCustom: true,
+            container: dateContainer,
+            get value() {
+                if (!selY.value || !selM.value || !selD.value) return '';
+                return `${selY.value}-${selM.value}-${selD.value}`;
+            },
+            focus: () => selY.focus(),
+            addEventListener: (ev, fn) => {
+                selY.addEventListener(ev, fn);
+                selM.addEventListener(ev, fn);
+                selD.addEventListener(ev, fn);
+            }
+        };
+    } else if (fieldKey === 'project') {
+        const mappings = await window.api.getMappings();
+        const doc = documents.find(d => d.id == docId);
+        let initialType = doc.type || 'صادر';
+
+        const container = document.createElement('div');
+        container.className = 'flex flex-col gap-2 mt-2 w-full';
+
+        const btnGroup = document.createElement('div');
+        btnGroup.className = 'flex gap-2';
+
+        const btnSader = document.createElement('button');
+        btnSader.className = `flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors ${initialType === 'صادر' ? 'bg-primary text-white border-primary' : 'border-primary/20 text-on-surface hover:bg-primary/10'}`;
+        btnSader.textContent = 'صادر';
+
+        const btnWared = document.createElement('button');
+        btnWared.className = `flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors ${initialType === 'وارد' ? 'bg-primary text-white border-primary' : 'border-primary/20 text-on-surface hover:bg-primary/10'}`;
+        btnWared.textContent = 'وارد';
+
+        btnGroup.appendChild(btnSader);
+        btnGroup.appendChild(btnWared);
+
+        const sel = document.createElement('select');
+        sel.className = 'w-full bg-surface-container-highest text-[10px] font-bold text-on-surface outline-none border border-primary/20 rounded-lg px-2 py-2 transition-all focus:border-primary/60 cursor-pointer appearance-none';
+
+        const renderOptions = (typeStr) => {
+            sel.innerHTML = '';
+            const map = typeStr === 'صادر' ? mappings.sader : mappings.wared;
+            const nameCounts = {};
+            for (let k in map) nameCounts[map[k]] = (nameCounts[map[k]] || 0) + 1;
+
+            let optionsHtml = '<option value="" disabled selected>اختر المشروع...</option>';
+            for (let code in map) {
+                const rawName = map[code];
+                const displayName = nameCounts[rawName] > 1 ? `${rawName} ${code}` : rawName;
+                const isSelected = (doc.version_no && doc.version_no.includes(code)) || currentValue === displayName || currentValue === rawName;
+                optionsHtml += `<option value="${code}" ${isSelected ? 'selected' : ''}>${displayName}</option>`;
+            }
+            sel.innerHTML = optionsHtml;
+        };
+
+        renderOptions(initialType);
+
+        btnSader.onclick = (e) => {
+            e.preventDefault();
+            initialType = 'صادر';
+            btnSader.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors bg-primary text-white border-primary';
+            btnWared.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors border-primary/20 text-on-surface hover:bg-primary/10';
+            renderOptions('صادر');
+        };
+
+        btnWared.onclick = (e) => {
+            e.preventDefault();
+            initialType = 'وارد';
+            btnWared.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors bg-primary text-white border-primary';
+            btnSader.className = 'flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors border-primary/20 text-on-surface hover:bg-primary/10';
+            renderOptions('وارد');
+        };
+
+        container.appendChild(btnGroup);
+        container.appendChild(sel);
+
+        inputEl = {
+            _isCustom: true,
+            container: container,
+            get value() {
+                if (!sel.value) return currentValue;
+                const map = initialType === 'صادر' ? mappings.sader : mappings.wared;
+                const rawName = map[sel.value];
+                const nameCounts = {};
+                for (let k in map) nameCounts[map[k]] = (nameCounts[map[k]] || 0) + 1;
+                const displayName = nameCounts[rawName] > 1 ? `${rawName} ${sel.value}` : rawName;
+                return { project: displayName, type: initialType, code: sel.value };
+            },
+            focus: () => sel.focus(),
+            addEventListener: (ev, fn) => {
+                sel.addEventListener(ev, fn);
+            }
+        };
+    } else {
+        inputEl = document.createElement(isMultiline ? 'textarea' : 'input');
+        inputEl.value = (currentValue === '—' || !currentValue) ? '' : currentValue;
+        inputEl.placeholder = `${currentLang === 'ar' ? 'أدخل' : 'Enter'} ${fieldLabel}...`;
+        if (isMultiline) inputEl.rows = 3;
+
+        // Match font size and weight based on the field
+        let fontSizeClass = 'text-sm';
+        let fontWeightClass = 'font-bold';
+        if (fieldKey === 'title') {
+            fontSizeClass = 'text-2xl';
+            fontWeightClass = 'font-extrabold';
+        } else if (fieldKey === 'summary') {
+            fontSizeClass = 'text-[14px]';
+            fontWeightClass = 'font-bold italic';
+        }
+
+        inputEl.className = `w-full bg-surface-container-highest ${fontSizeClass} ${fontWeightClass} text-on-surface outline-none border border-primary/20 rounded-xl px-3 py-2.5 resize-none mt-2 placeholder:text-on-surface-variant/30 transition-all focus:border-primary/60 focus:bg-surface-container-high ${isMultiline ? 'min-h-[5rem]' : ''}`;
+    }
+
+    // Replace value text with input
+    if (inputEl._isCustom) {
+        valueEl.replaceWith(inputEl.container);
+    } else {
+        // For title, we want to keep the h2 as a wrapper if it helps, but usually we just replace the whole field-value
+        valueEl.replaceWith(inputEl);
+    }
+    inputEl.focus();
+    if (inputEl) {
+        // Only call .select() on real input elements (not custom date picker)
+        if (typeof inputEl.select === 'function') inputEl.select();
+        // Add click-outside listener for regular fields
+        setTimeout(() => {
+            const handleGlobalClickRegular = (e) => {
+                if (!cardEl.contains(e.target)) {
+                    document.getElementById(`cancel-edit-${fieldKey}`)?.click();
+                }
+            };
+            inputEl._globalClickHandler = handleGlobalClickRegular;
+            document.addEventListener('click', handleGlobalClickRegular);
+        }, 10);
+    }
+
+    // Highlight the card subtly
+    if (fieldKey === 'title') {
+        cardEl.classList.add('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+        cardEl.classList.remove('border-transparent');
+        const header = cardEl.querySelector('.title-edit-header');
+        if (header) {
+            header.classList.remove('hidden');
+            header.classList.add('flex');
+        }
+        // If we replaced h2 with input, the input is now a direct child. Let's add padding to IT.
+        if (inputEl && !inputEl._isCustom) {
+            inputEl.classList.add('mx-5', 'mb-5', 'w-[calc(100%-2.5rem)]');
+        }
+    } else {
+        cardEl.classList.add('bg-surface-container-highest/30', 'transition-all');
+        cardEl.classList.remove('hover:border-primary/20');
+    }
+
+    // Create action buttons
+    const actions = document.createElement('div');
+    actions.id = `actions-${fieldKey}`;
+    actions.className = 'flex gap-3 mt-3 justify-end items-center w-full';
+    actions.innerHTML = `
+        <button id="cancel-edit-${fieldKey}" class="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-on-surface-variant bg-surface-container-highest rounded-xl hover:text-error transition-all flex items-center gap-2 cursor-pointer border border-outline-variant/20 hover:bg-surface-container-high">
+            ${getIcon('close', 'xs')} ${currentLang === 'ar' ? 'إلغاء' : 'Cancel'}
+        </button>
+        <button id="save-edit-${fieldKey}" class="px-6 py-2 text-[10px] font-black uppercase tracking-widest text-white bg-primary rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-primary/20 flex items-center gap-2 cursor-pointer">
+            ${getIcon('check', 'xs')} ${currentLang === 'ar' ? 'حفظ التغييرات' : 'Save Changes'}
+        </button>
+    `;
+
+    // Detect if this card is inside the date-ref flex row
+    const flexRowParent = cardEl.parentElement;
+    const isInDateRefRow = flexRowParent && flexRowParent.classList.contains('date-ref-row');
+    let siblingCard = null;
+
+    if (isInDateRefRow) {
+        // Hide the sibling (other field) and expand this one to full width
+        siblingCard = Array.from(flexRowParent.children).find(c => c !== cardEl);
+        if (siblingCard) {
+            siblingCard.style.setProperty('display', 'none', 'important');
+        }
+        if (flexRowParent.classList.contains('grid')) {
+            flexRowParent.classList.remove('md:grid-cols-2');
+            flexRowParent.classList.add('md:grid-cols-1');
+        }
+        // Insert buttons AFTER the row so they're never clipped
+        flexRowParent.insertAdjacentElement('afterend', actions);
+    } else {
+        // All other fields: append buttons directly inside the card
+        cardEl.style.setProperty('display', 'flex', 'important');
+        cardEl.style.setProperty('flex-direction', 'column', 'important');
+
+        // Fix for title buttons clipping
+        if (fieldKey === 'title') {
+            actions.classList.add('px-5', 'pb-5', 'mt-0');
+        }
+
+        cardEl.appendChild(actions);
+    }
+
+    const cancelFn = () => {
+        // Restore original value display
+        const p = document.createElement('p');
+        p.className = `field-value ${isMultiline ? 'text-sm' : 'text-xs'} font-bold text-on-surface leading-snug ${isMultiline ? 'pl-7' : 'truncate group-hover/field:whitespace-normal'}`;
+        if (fieldKey === 'version_no') p.classList.add('text-primary');
+        if (fieldKey === 'title') p.className = "field-value font-headline font-extrabold text-3xl tracking-tight text-on-surface leading-tight break-anywhere";
+
+        if (fieldKey === 'summary') {
+            p.className = "field-value text-[14px] leading-relaxed text-on-surface font-bold italic";
+            p.textContent = `"${currentValue || ''}"`;
+        } else {
+            p.textContent = currentValue || '—';
+        }
+        (inputEl.dropdownContainer || inputEl.container || inputEl).replaceWith(p);
+        actions.remove();
+        cardEl.classList.remove('is-editing');
+        cardEl.style.display = '';
+        cardEl.style.flexDirection = '';
+        cardEl.style.flex = ''; // Reset expansion
+        if (siblingCard) siblingCard.style.display = ''; // Restore sibling
+        if (isInDateRefRow && flexRowParent && flexRowParent.classList.contains('grid')) {
+            flexRowParent.classList.remove('md:grid-cols-1');
+            flexRowParent.classList.add('md:grid-cols-2');
+        }
+
+        if (fieldKey === 'title') {
+            cardEl.classList.remove('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+            cardEl.classList.add('border-transparent');
+            const header = cardEl.querySelector('.title-edit-header');
+            if (header) {
+                header.classList.add('hidden');
+                header.classList.remove('flex');
+            }
+            const h2 = cardEl.querySelector('h2');
+            if (h2) h2.classList.remove('px-5', 'pb-5');
+        } else {
+            cardEl.classList.remove('bg-surface-container-highest/30');
+            cardEl.classList.add('hover:border-primary/20');
+        }
+        if (inputEl._globalClickHandler) {
+            document.removeEventListener('click', inputEl._globalClickHandler);
+        }
+    };
+
+    const saveFn = async () => {
+        let newValue = inputEl.value;
+        let updatePayload = {};
+        let finalDisplayValue = '';
+
+        if (typeof newValue === 'object' && newValue !== null) {
+            if (newValue.project === currentValue) { cancelFn(); return; }
+            finalDisplayValue = newValue.project;
+            updatePayload = { project: newValue.project, type: newValue.type };
+
+            const doc = documents.find(d => d.id == docId);
+            let vNo = doc.version_no || '';
+
+            // Auto-update version_no (middle number) logic
+            if (newValue.code) {
+                if (!vNo || vNo === '—' || vNo === 'غير محدد') {
+                    const year = new Date().getFullYear();
+                    vNo = `${year}/${newValue.code}/...`;
+                } else {
+                    // Split into parts while keeping delimiters
+                    const parts = vNo.split(/([/\-\._])/);
+                    const dataParts = parts.filter((_, i) => i % 2 === 0);
+                    const delimiters = parts.filter((_, i) => i % 2 !== 0);
+
+                    if (dataParts.length >= 3) {
+                        // Replace the middle part (index 1) with the new project code
+                        dataParts[1] = newValue.code;
+
+                        // Reconstruct the string
+                        let newVNo = "";
+                        for (let i = 0; i < dataParts.length; i++) {
+                            newVNo += dataParts[i];
+                            if (i < delimiters.length) newVNo += delimiters[i];
+                        }
+                        vNo = newVNo;
+                    } else if (dataParts.length === 2) {
+                        // Convert 2-part (e.g. 2026/235) to 3-part (2026/103/235)
+                        const sep = delimiters[0] || '/';
+                        const yearIdx = dataParts.findIndex(p => p.length === 4);
+                        if (yearIdx === 0) {
+                            // Year/Number -> Year/Code/Number
+                            vNo = `${dataParts[0]}${sep}${newValue.code}${sep}${dataParts[1]}`;
+                        } else {
+                            // Number/Year -> Number/Code/Year
+                            vNo = `${dataParts[0]}${sep}${newValue.code}${sep}${dataParts[1]}`;
+                        }
+                    } else if (dataParts.length === 1) {
+                        // Single part -> Year/Code/Number
+                        const year = new Date().getFullYear();
+                        vNo = `${year}/${newValue.code}/${dataParts[0]}`;
+                    }
+                }
+                updatePayload.version_no = vNo;
+            }
+        } else {
+            newValue = typeof newValue === 'string' ? newValue.trim() : newValue;
+            if (newValue === currentValue) { cancelFn(); return; }
+            finalDisplayValue = newValue;
+            updatePayload = { [fieldKey]: newValue };
+        }
+
+        const saveBtn = document.getElementById(`save-edit-${fieldKey}`);
+        if (saveBtn) {
+            saveBtn.textContent = currentLang === 'ar' ? '...' : '...';
+            saveBtn.disabled = true;
+        }
+
+        try {
+            // Record history before update
+            const doc = documents.find(d => d.id == docId);
+            if (fieldKey === 'project' && doc) {
+                // For project changes, record all related fields to allow full undo
+                pushToHistory({
+                    id: docId,
+                    field: 'project',
+                    oldValue: currentValue,
+                    oldData: {
+                        project: doc.project,
+                        type: doc.type,
+                        version_no: doc.version_no
+                    }
+                });
+            } else {
+                pushToHistory({ id: docId, field: fieldKey, oldValue: currentValue });
+            }
+
+            const result = await window.api.updateDocument(docId, updatePayload);
+            if (result.success) {
+                // 1. تحديث المصفوفة المحلية فوراً
+                const docIndex = documents.findIndex(d => d.id == docId);
+                if (docIndex !== -1) {
+                    if (result.updatedDoc) {
+                        documents[docIndex] = result.updatedDoc;
+                        finalDisplayValue = result.updatedDoc[fieldKey] || finalDisplayValue;
+                    } else {
+                        Object.assign(documents[docIndex], updatePayload);
+                        if (result.newPath) documents[docIndex].file_path = result.newPath;
+                        if (result.newFile) documents[docIndex].file = result.newFile;
+                    }
+                }
+
+                // 2. تحديث عرض القيمة في الواجهة
+                const p = document.createElement('p');
+                p.className = `field-value ${isMultiline ? 'text-sm' : 'text-xs'} font-bold text-on-surface leading-snug`;
+                if (fieldKey === 'version_no') p.classList.add('text-primary');
+                if (fieldKey === 'title') p.className = "field-value font-headline font-extrabold text-3xl tracking-tight text-on-surface leading-tight break-anywhere";
+
+                if (fieldKey === 'summary') {
+                    p.className = "field-value text-[14px] leading-relaxed text-on-surface font-bold italic";
+                    p.textContent = `"${finalDisplayValue}"`;
+                } else {
+                    p.textContent = finalDisplayValue || '—';
+                }
+                (inputEl.dropdownContainer || inputEl.container || inputEl).replaceWith(p);
+                actions.remove();
+                cardEl.classList.remove('is-editing');
+                cardEl.style.display = '';
+                cardEl.style.flexDirection = '';
+                cardEl.style.flex = ''; // Reset expansion
+                if (siblingCard) siblingCard.style.display = ''; // Restore sibling
+
+                if (fieldKey === 'title') {
+                    cardEl.classList.remove('bg-surface-container-low', 'border-primary/20', 'p-0', 'shadow-xl');
+                    cardEl.classList.add('border-transparent');
+                    const header = cardEl.querySelector('.title-edit-header');
+                    if (header) {
+                        header.classList.add('hidden');
+                        header.classList.remove('flex');
+                    }
+                    const h2 = cardEl.querySelector('h2');
+                    if (h2) h2.classList.remove('px-5', 'pb-5');
+                } else {
+                    cardEl.classList.remove('bg-surface-container-highest/30');
+                    cardEl.classList.add('hover:border-primary/20');
+                }
+
+                showToast('storage_updated');
+                if (inputEl._globalClickHandler) {
+                    document.removeEventListener('click', inputEl._globalClickHandler);
+                }
+
+                selectDocument(docId, true);
+
+                // 3. إعادة تحديث العرض الرئيسي لضمان ترتيب البيانات أو البحث
+                renderArchiveView(document.getElementById('global-search-input')?.value || '');
+            } else {
+                showToast(result.error || (currentLang === 'ar' ? 'فشل حفظ التعديلات.' : 'Failed to save changes.'));
+                cancelFn();
+            }
+        } catch (e) {
+            cancelFn();
+        }
+    };
+
+    document.getElementById(`save-edit-${fieldKey}`)?.addEventListener('click', saveFn);
+    document.getElementById(`cancel-edit-${fieldKey}`)?.addEventListener('click', cancelFn);
+
+    // Save on Enter (for single-line fields), cancel on Escape
+    inputEl.addEventListener('keydown', (e) => {
+        if (!isMultiline && e.key === 'Enter') { e.preventDefault(); saveFn(); }
+        if (e.key === 'Escape') cancelFn();
+    });
+};
+
+async function handleDeleteDocument(id, filePath) {
+    if (await confirmAction('confirm_title', 'delete_confirm')) {
+        const result = await window.api.deleteDocument(id, filePath);
+        if (result.success) {
+            showToast('delete_success');
+        } else {
+            alert('Delete failed: ' + result.error);
+        }
+    }
+}
+
+async function handleBatchDelete() {
+    if (selectedDocIds.size === 0) return;
+    if (await confirmAction('confirm_title', 'delete_confirm')) {
+        const docsToDelete = documents.filter(d => selectedDocIds.has(d.id.toString()));
+        const result = await window.api.deleteMultipleDocuments(docsToDelete);
+        if (result.success) {
+            showToast('delete_success');
+            exitSelectionMode();
+        } else {
+            alert('Batch delete failed');
+        }
+    }
+}
+
+function handleDocClick(event, id) {
+    if (isSelectionMode) {
+        const sid = id.toString();
+        if (selectedDocIds.has(sid)) selectedDocIds.delete(sid);
+        else selectedDocIds.add(sid);
+        renderArchiveView(document.getElementById('global-search-input')?.value || '');
+    } else {
+        selectDocument(id);
+    }
+}
+
+function exitSelectionMode() {
+    isSelectionMode = false;
+    selectedDocIds.clear();
+    renderArchiveView(document.getElementById('global-search-input')?.value || '');
+}
+
+async function handleClearArchive() {
+    if (isSelectionMode) {
+        exitSelectionMode();
+        return;
+    }
+    isSelectionMode = true;
+    renderArchiveView(document.getElementById('global-search-input')?.value || '');
+}
+
+if (window.api) {
+    let lastDocCount = 0;
+    window.api.onDocumentsUpdate((updatedDocs) => {
+        const newDocs = updatedDocs || [];
+        const prevDocs = documents;
+        documents = newDocs;
+        lastDocCount = newDocs.length;
+
+        if (currentView === 'archive') {
+            renderArchiveView(document.getElementById('global-search-input')?.value || '');
+            buildDynamicFilterMenu();
+        }
+
+        if (activeDocId && currentView === 'archive') {
+            const activeDoc = documents.find(d => d.id == activeDocId);
+            const prevDoc = prevDocs.find(d => d.id == activeDocId);
+            if (activeDoc && prevDoc && prevDoc.status === 'processing' && activeDoc.status !== 'processing') {
+                selectDocument(activeDocId, true);
+            } else if (activeDoc && !prevDoc) {
+                selectDocument(activeDocId, true);
+            }
+        }
+    });
+    let currentBatchState = { active: false, total: 0, completed: 0 };
+    let pipelineTimeout1, pipelineTimeout2, pipelineTimeout3;
+
+    if (window.api.onBatchProgress) {
+        window.api.onBatchProgress((data) => {
+            currentBatchState = data;
+            const meta = document.getElementById('pipeline-progress-meta');
+            const countLabel = document.getElementById('pipeline-batch-count');
+            const pctLabel = document.getElementById('pipeline-overall-percent');
+            if (meta && countLabel && pctLabel) {
+                if (data.active) {
+                    meta.style.opacity = '1';
+                    const pct = Math.round((data.completed / data.total) * 100);
+                    countLabel.innerText = currentLang === 'ar' ? `جاري معالجة ${data.completed} من ${data.total}` : `Processing ${data.completed} of ${data.total}`;
+                    pctLabel.innerText = `${pct}%`;
+                } else {
+                    // Update to 100% just in case
+                    const pct = Math.round((data.completed / data.total) * 100) || 100;
+                    countLabel.innerText = currentLang === 'ar' ? `اكتملت معالجة ${data.total} ملفات` : `Completed ${data.total} files`;
+                    pctLabel.innerText = `${pct}%`;
+                }
+            }
+        });
+    }
+
+    window.api.onStatusUpdate((status) => {
+        if (!status) return;
+        const msgKey = typeof status === 'string' ? status : status.msg;
+        const pipeline = document.getElementById('pipeline-visualizer');
+        if (!pipeline) return;
+
+        // Show pipeline if hidden or if it was showing success for a previous file
+        if ((!pipeline.classList.contains('active') && msgKey !== 'status_idle') ||
+            (pipeline.classList.contains('active') && msgKey !== 'status_idle' && pipeline.classList.contains('success'))) {
+            clearTimeout(pipelineTimeout1);
+            clearTimeout(pipelineTimeout2);
+            clearTimeout(pipelineTimeout3);
+            resetPipeline();
+            updatePipelineUI(); // Ensure icons and labels are correct
+            pipeline.classList.remove('pipeline-exit', 'success');
+            pipeline.classList.add('active');
+        }
+
+        updatePipelineStatus(msgKey);
+
+        if (msgKey === 'status_idle' || msgKey === 'sync_complete') {
+            completePipeline();
+        }
+    });
+
+    function resetPipeline() {
+        const pipeline = document.getElementById('pipeline-visualizer');
+        pipeline.querySelectorAll('.pipeline-step').forEach(s => s.classList.remove('active', 'completed'));
+        pipeline.querySelectorAll('.pipeline-connector').forEach(c => c.classList.remove('filled'));
+    }
+
+    function updatePipelineStatus(msgKey) {
+        const pipeline = document.getElementById('pipeline-visualizer');
+        const isAiActive = forceAiForNextUpload || _autoAnalysisEnabled;
+        const isSplitActive = manualSplitForNextUpload;
+
+        // Step 1: Upload / Extracting
+        if (msgKey === 'archiving_msg' || msgKey === 'status_extracting' || msgKey === 'status_ocr') {
+            setStepActive('step-upload');
+        }
+        // Step: PDF Splitting
+        else if (msgKey === 'status_splitting') {
+            setStepCompleted('step-upload', 'conn-upload');
+            setStepActive('step-split');
+        }
+        // Step: AI Analysis
+        else if (msgKey === 'status_ai') {
+            setStepCompleted('step-upload', 'conn-upload');
+            if (isSplitActive) {
+                setStepCompleted('step-split', 'conn-split');
+            }
+            setStepActive('step-analyze');
+        }
+        // Step 3: Organizing / Saving
+        else if (msgKey === 'status_organizing' || msgKey === 'status_saving') {
+            setStepCompleted('step-upload', 'conn-upload');
+            if (isSplitActive) setStepCompleted('step-split', 'conn-split');
+            if (isAiActive) setStepCompleted('step-analyze', 'conn-analyze');
+            setStepActive('step-organize');
+        }
+    }
+
+    function setStepActive(stepId) {
+        const step = document.getElementById(stepId);
+        if (step) step.classList.add('active');
+    }
+
+    function setStepCompleted(stepId, connId) {
+        const step = document.getElementById(stepId);
+        const conn = document.getElementById(connId);
+        if (step) {
+            step.classList.remove('active');
+            step.classList.add('completed');
+        }
+        if (conn) conn.classList.add('filled');
+    }
+
+    function completePipeline() {
+        const pipeline = document.getElementById('pipeline-visualizer');
+        const isAiActive = forceAiForNextUpload || _autoAnalysisEnabled;
+        const isSplitActive = manualSplitForNextUpload;
+
+        // Ensure all intermediate steps are completed
+        setStepCompleted('step-upload', 'conn-upload');
+        if (isSplitActive) setStepCompleted('step-split', 'conn-split');
+        if (isAiActive) setStepCompleted('step-analyze', 'conn-analyze');
+
+        setStepCompleted('step-organize', 'conn-organize');
+        setStepActive('step-ready');
+        pipeline.classList.add('success');
+
+        if (currentBatchState.active) {
+            // Keep it visible for the next file
+            return;
+        }
+
+        clearTimeout(pipelineTimeout1);
+        clearTimeout(pipelineTimeout2);
+        clearTimeout(pipelineTimeout3);
+
+        pipelineTimeout1 = setTimeout(() => {
+            const readyStep = document.getElementById('step-ready');
+            if (readyStep) {
+                readyStep.classList.remove('active');
+                readyStep.classList.add('completed');
+            }
+
+            // Exit animation
+            pipelineTimeout2 = setTimeout(() => {
+                pipeline.classList.add('pipeline-exit');
+                const meta = document.getElementById('pipeline-progress-meta');
+                if (meta) meta.style.opacity = '0';
+
+                pipelineTimeout3 = setTimeout(() => {
+                    pipeline.classList.remove('active', 'pipeline-exit', 'success');
+                }, 1000);
+            }, 2000);
+        }, 1000);
+    }
+
+    // Initialize Documents
+    window.api.getDocuments().then(docs => { documents = docs || []; });
+
+    if (window.api.onProjectSimilarityAsk) {
+        // Queue to handle multiple files needing confirmation — one dialog at a time
+        let _similarityQueue = [];
+        let _similarityBusy = false;
+
+        async function _processSimilarityQueue() {
+            if (_similarityBusy || _similarityQueue.length === 0) return;
+            _similarityBusy = true;
+
+            const { docData, similar, newProject } = _similarityQueue.shift();
+
+            const fileName = docData.file || docData.title || '';
+            const msg = currentLang === 'ar'
+                ? `الملف: "${fileName}"\n\nتم العثور على مجلد مشابه: "${similar}"\nهل تود وضع الملف فيه بدلاً من إنشاء مجلد جديد باسم "${newProject}"؟`
+                : `File: "${fileName}"\n\nFound similar project folder: "${similar}".\nUse it instead of creating "${newProject}"?`;
+
+            const useSimilar = await confirmAction('similarity_title', '', 'ai', msg, 'use_similar_btn', 'create_new_btn');
+            const finalProject = useSimilar ? similar : newProject;
+
+            showToast(currentLang === 'ar' ? 'جاري الحفظ...' : 'Saving...', {}, 2000);
+            await window.api.confirmProjectSimilarity(docData, finalProject);
+
+            _similarityBusy = false;
+            _processSimilarityQueue(); // Process next in queue
+        }
+
+        window.api.onProjectSimilarityAsk(async (data) => {
+            _similarityQueue.push(data);
+            _processSimilarityQueue();
+        });
+    }
+}
+
+document.getElementById('nav-add').onclick = () => switchView('add');
+document.getElementById('nav-archive').onclick = () => switchView('archive');
+document.getElementById('nav-ai').onclick = async () => {
+    switchView('ai');
+};
+
+const toastViewBtn = document.getElementById('toast-view-btn');
+if (toastViewBtn) toastViewBtn.onclick = () => switchView('archive');
+
+// Settings Listeners
+const settingsOpenBtn = document.getElementById('settings-open-btn');
+const settingsBackdrop = document.getElementById('settings-backdrop');
+const themeLightBtn = document.getElementById('theme-light-btn');
+const themeDarkBtn = document.getElementById('theme-dark-btn');
+const langEnBtn = document.getElementById('lang-en-btn');
+const langArBtn = document.getElementById('lang-ar-btn');
+
+// Selective Delete Listeners
+const batchDeleteBtn = document.getElementById('batch-delete-btn');
+const batchCancelBtn = document.getElementById('batch-cancel-btn');
+
+if (settingsOpenBtn) settingsOpenBtn.onclick = () => toggleSettingsModal(true);
+if (settingsBackdrop) settingsBackdrop.onclick = () => toggleSettingsModal(false);
+
+if (themeLightBtn) themeLightBtn.onclick = () => setTheme('light');
+if (themeDarkBtn) themeDarkBtn.onclick = () => setTheme('dark');
+if (langEnBtn) langEnBtn.onclick = () => setLanguage('en');
+if (langArBtn) langArBtn.onclick = () => setLanguage('ar');
+
+const changeStorageBtn = document.getElementById('change-storage-btn');
+if (changeStorageBtn) {
+    changeStorageBtn.onclick = async () => {
+        const result = await window.api.changeStorageFolder();
+        if (result && result.success) {
+            showToast('storage_updated');
+            refreshStorageDisplay();
+            // Refresh documents list from new storage
+            window.api.getDocuments().then(docs => {
+                documents = docs || [];
+                if (currentView === 'archive') renderArchiveView();
+            });
+        }
+    };
+}
+
+if (batchDeleteBtn) batchDeleteBtn.onclick = handleBatchDelete;
+if (batchCancelBtn) batchCancelBtn.onclick = exitSelectionMode;
+
+// Initialize Theme
+setTheme(currentTheme);
+
+const closeRail = document.getElementById('close-rail');
+if (closeRail && insightRail) closeRail.onclick = () => insightRail.classList.add('translate-x-full');
+
+// Initialized at bottom
+
+console.log("Archiva Plus Intelligence Engine Initialized.");
+
+document.addEventListener('click', (e) => {
+    const filterMenu = document.getElementById('filter-menu');
+    const filterToggle = document.getElementById('toggle-filter-menu');
+    if (filterMenu && filterMenu.classList.contains('active')) {
+        if (!filterMenu.contains(e.target) && e.target !== filterToggle && !filterToggle.contains(e.target)) {
+            filterMenu.classList.remove('active');
+        }
+    }
+});
+
+// sendReady moved to bottom
+
+// ============================================================
+// AUTO-ANALYSIS TOGGLE LOGIC
+// ============================================================
+
+// moved to top
+
+function setAutoAnalysisUI(enabled, activatedAt) {
+    _autoAnalysisEnabled = enabled;
+    const toggleBtn = document.getElementById('auto-analysis-toggle');
+    const badge = document.getElementById('auto-analysis-badge');
+    const activatedSpan = document.getElementById('auto-analysis-activated-at');
+    const descEl = document.getElementById('auto-analysis-desc');
+
+    if (!toggleBtn) return;
+
+    // Animate the toggle switch
+    toggleBtn.classList.toggle('on', enabled);
+    toggleBtn.classList.toggle('off', !enabled);
+    toggleBtn.setAttribute('aria-checked', String(enabled));
+
+    // Update description text
+    if (descEl) descEl.innerText = t(enabled ? 'auto_analysis_on' : 'auto_analysis_off');
+
+    // Show/hide activation timestamp badge
+    if (badge && activatedSpan) {
+        if (enabled && activatedAt) {
+            try {
+                const dt = new Date(activatedAt);
+                const formatted = dt.toLocaleString(currentLang === 'ar' ? 'ar-SA' : 'en-GB', {
+                    year: 'numeric', month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+                activatedSpan.innerText = `${t('activated_since')} ${formatted}`;
+                badge.classList.remove('hidden');
+            } catch (e) {
+                badge.classList.add('hidden');
+            }
+        } else {
+            badge.classList.add('hidden');
+        }
+    }
+}
+
+async function initAutoAnalysisToggle() {
+    if (!window.api || !window.api.getAutoAnalysisStatus) return;
+    try {
+        const status = await window.api.getAutoAnalysisStatus();
+        setAutoAnalysisUI(status.enabled, status.activatedAt);
+    } catch (e) {
+        console.error('Failed to load auto-analysis status:', e);
+        setAutoAnalysisUI(false, null); // Fallback: show as disabled to save costs/security
+    }
+}
+
+// Attach click handler to the toggle button
+const autoAnalysisToggleBtn = document.getElementById('auto-analysis-toggle');
+if (autoAnalysisToggleBtn) {
+    autoAnalysisToggleBtn.addEventListener('click', async () => {
+        const nextState = !_autoAnalysisEnabled;
+
+        // If turning ON, require password
+        if (nextState) {
+            const unlocked = await requireAiUnlock(currentLang === 'ar' ? 'أدخل كلمة السر لتفعيل التحليل التلقائي بالذكاء الاصطناعي' : 'Enter password to enable Auto AI Analysis');
+            if (!unlocked) return;
+        } else {
+            aiUnlocked = false;
+            if (window.api.lockFeatures) window.api.lockFeatures();
+        }
+
+        // Immediately flip UI for instant tactile feedback
+        setAutoAnalysisUI(nextState, nextState ? new Date().toISOString() : null);
+
+        // Prevent double-clicks during async IPC
+        autoAnalysisToggleBtn.disabled = true;
+        autoAnalysisToggleBtn.style.opacity = '0.7';
+
+        try {
+            const result = await window.api.toggleAutoAnalysis(nextState);
+            if (result && result.success) {
+                // Sync with actual server response (real activatedAt timestamp)
+                setAutoAnalysisUI(result.enabled, result.activatedAt);
+                const toastKey = result.enabled
+                    ? 'auto_analysis_enabled_toast'
+                    : 'auto_analysis_disabled_toast';
+                showToast(toastKey, {}, 4000);
+            } else {
+                // Revert UI on failure
+                setAutoAnalysisUI(!nextState, null);
+            }
+        } catch (e) {
+            console.error('Failed to toggle auto-analysis:', e);
+            setAutoAnalysisUI(!nextState, null); // revert on error
+        } finally {
+            autoAnalysisToggleBtn.disabled = false;
+            autoAnalysisToggleBtn.style.opacity = '1';
+        }
+    });
+}
+
+function setPDFSplitUI(enabled) {
+    _pdfSplitEnabled = enabled;
+    const toggleBtn = document.getElementById('pdf-split-toggle');
+    if (!toggleBtn) return;
+
+    if (enabled) {
+        toggleBtn.classList.remove('off');
+        toggleBtn.classList.add('on');
+        toggleBtn.setAttribute('aria-checked', 'true');
+    } else {
+        toggleBtn.classList.remove('on');
+        toggleBtn.classList.add('off');
+        toggleBtn.setAttribute('aria-checked', 'false');
+    }
+}
+
+async function initPDFSplitToggle() {
+    if (!window.api || !window.api.getPDFSplitStatus) return;
+    try {
+        const status = await window.api.getPDFSplitStatus();
+        setPDFSplitUI(status.enabled);
+    } catch (e) {
+        console.error('Failed to load PDF split status:', e);
+        setPDFSplitUI(false);
+    }
+}
+
+const pdfSplitToggleBtn = document.getElementById('pdf-split-toggle');
+if (pdfSplitToggleBtn) {
+    pdfSplitToggleBtn.addEventListener('click', async () => {
+        const nextState = !_pdfSplitEnabled;
+        setPDFSplitUI(nextState);
+        pdfSplitToggleBtn.disabled = true;
+
+        try {
+            const result = await window.api.togglePDFSplit(nextState);
+            if (result && result.success) {
+                setPDFSplitUI(result.enabled);
+                showToast(result.enabled ? 'pdf_split_enabled_toast' : 'pdf_split_disabled_toast', {}, 4000);
+                updatePipelineUI();
+            } else {
+                setPDFSplitUI(!nextState);
+            }
+        } catch (e) {
+            console.error('Failed to toggle PDF split:', e);
+            setPDFSplitUI(!nextState);
+        } finally {
+            pdfSplitToggleBtn.disabled = false;
+        }
+    });
+}
+
+initAutoAnalysisToggle();
+initPDFSplitToggle();
+
+
+
+
+
+
+// ============================================================
+// SMART PROJECT MATCHING TOGGLE LOGIC
+// ============================================================
+
+// moved to top
+
+function setSmartProjectUI(enabled) {
+    // Force disabled during maintenance
+    _smartProjectEnabled = false;
+    const toggleBtn = document.getElementById('smart-project-toggle');
+    if (!toggleBtn) return;
+
+    toggleBtn.classList.remove('on');
+    toggleBtn.classList.add('off', 'opacity-20', 'cursor-not-allowed');
+    toggleBtn.setAttribute('aria-checked', 'false');
+    toggleBtn.disabled = true;
+}
+
+async function initSmartProjectToggle() {
+    // Always disabled during maintenance
+    setSmartProjectUI(false);
+}
+
+const smartProjectToggleBtn = document.getElementById('smart-project-toggle');
+if (smartProjectToggleBtn) {
+    /* 
+smartProjectToggleBtn?.addEventListener('click', async () => {
+    // Feature disabled during maintenance
+});
+*/
+}
+
+// ============================================================
+// FORCE STOP LOGIC
+// ============================================================
+
+const forceStopBtn = document.getElementById('force-stop-btn');
+if (forceStopBtn) {
+    forceStopBtn.onclick = async (e) => {
+        e.stopPropagation();
+        const customMsg = currentLang === 'ar'
+            ? "هل أنت متأكد من إيقاف العملية الحالية؟ سيتم إنهاء تحليل الذكاء الاصطناعي فوراً."
+            : "Are you sure you want to STOP the current process? This will terminate the AI analysis immediately.";
+
+        const confirmed = await confirmAction('stop_label', '', 'error', customMsg);
+
+        if (confirmed) {
+            forceStopBtn.disabled = true;
+            forceStopBtn.style.opacity = '0.5';
+            const res = await window.api.stopBackend();
+            if (res.success) {
+                showToast('system_idle');
+                const pipeline = document.getElementById('pipeline-visualizer');
+                if (pipeline) {
+                    pipeline.classList.remove('active', 'pipeline-exit', 'success');
+                    resetPipeline();
+                }
+            }
+            forceStopBtn.disabled = false;
+            forceStopBtn.style.opacity = '1';
+        }
+    };
+}
+
+const scrollToTopBtn = document.getElementById('scroll-to-top-btn');
+
+if (scrollToTopBtn) {
+    window.addEventListener('scroll', () => {
+        if (currentView === 'archive' && window.scrollY > 300) {
+            scrollToTopBtn.classList.remove('opacity-0', 'translate-y-8', 'pointer-events-none');
+            scrollToTopBtn.classList.add('opacity-100', 'translate-y-0', 'pointer-events-auto');
+        } else {
+            scrollToTopBtn.classList.add('opacity-0', 'translate-y-8', 'pointer-events-none');
+            scrollToTopBtn.classList.remove('opacity-100', 'translate-y-0', 'pointer-events-auto');
+        }
+    });
+
+    scrollToTopBtn.addEventListener('click', () => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+}
+
+function updatePipelineUI() {
+    const container = document.getElementById('pipeline-steps-container');
+    if (!container) return;
+
+    const isAiActive = forceAiForNextUpload || _autoAnalysisEnabled;
+    const isSplitActive = manualSplitForNextUpload;
+
+    const steps = [];
+    steps.push({ id: 'upload', icon: 'cloud_upload' });
+    if (isSplitActive) steps.push({ id: 'split', icon: 'pdf' });
+    if (isAiActive) steps.push({ id: 'analyze', icon: 'auto_awesome' });
+    steps.push({ id: 'organize', icon: 'folder_managed' });
+    steps.push({ id: 'ready', icon: 'task_alt', final: true });
+
+    let html = '';
+    steps.forEach((s, idx) => {
+        html += `
+            <div class="pipeline-step ${s.final ? 'final' : ''}" id="step-${s.id}">
+                <div class="step-icon-wrapper">${getIcon(s.icon)}</div>
+                <div class="step-label">${t(`step_${s.id}`)}</div>
+            </div>
+        `;
+        if (idx < steps.length - 1) {
+            html += `
+                <div class="pipeline-connector" id="conn-${s.id}">
+                    <div class="connector-fill"></div>
+                </div>
+            `;
+        }
+    });
+    container.innerHTML = html;
+}
+
+// Handle Project Similarity Confirmation
+if (window.api.onProjectSimilarityAsk) {
+    window.api.onProjectSimilarityAsk(async (data) => {
+        const { docData, similar, newProject } = data;
+
+        // Show a custom confirm dialog for similarity
+        const confirmOverlay = document.createElement('div');
+        confirmOverlay.className = 'fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in';
+        confirmOverlay.innerHTML = `
+            <div class="bg-surface-container-highest border border-outline-variant/10 rounded-[2.5rem] p-10 max-w-lg w-full shadow-2xl space-y-8 animate-scale-in">
+                <div class="flex flex-col items-center text-center space-y-4">
+                    <div class="w-16 h-16 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-2">
+                        ${getIcon('folder_managed', 'lg')}
+                    </div>
+                    <h2 class="text-2xl font-black tracking-tight text-on-surface">${t('similarity_title')}</h2>
+                    <p class="text-on-surface-variant leading-relaxed">
+                        ${currentLang === 'ar'
+                ? `تم اكتشاف مشروع مشابه موجود بالفعل: <span class="font-bold text-primary">"${similar}"</span>. هل تريد وضعه فيه أم إنشاء مجلد جديد باسم <span class="font-bold">"${newProject}"</span>؟`
+                : `A similar project was found: <span class="font-bold text-primary">"${similar}"</span>. Do you want to merge it or create a new folder named <span class="font-bold">"${newProject}"</span>?`}
+                    </p>
+                </div>
+                <div class="flex flex-col gap-3">
+                    <button id="similarity-use-existing" class="w-full py-4 bg-primary text-white rounded-2xl font-bold hover:brightness-110 transition-all flex items-center justify-center gap-2">
+                        ${getIcon('folder', 'sm')} ${t('use_similar_btn')}
+                    </button>
+                    <button id="similarity-create-new" class="w-full py-4 bg-surface-container-high text-on-surface rounded-2xl font-bold hover:bg-surface-container-highest transition-all flex items-center justify-center gap-2">
+                        ${getIcon('create_new_folder', 'sm')} ${t('create_new_btn')}
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(confirmOverlay);
+
+        const useExistingBtn = confirmOverlay.querySelector('#similarity-use-existing');
+        const createNewBtn = confirmOverlay.querySelector('#similarity-create-new');
+
+        useExistingBtn.onclick = async () => {
+            confirmOverlay.remove();
+            await window.api.confirmProjectSimilarity(docData, similar);
+        };
+
+        createNewBtn.onclick = async () => {
+            confirmOverlay.remove();
+            await window.api.confirmProjectSimilarity(docData, newProject);
+        };
+    });
+}
+
+// ============================================================
+// AUTO-UPDATE UI LOGIC (Premium Modal)
+// ============================================================
+
+let updateSnoozed = false;
+
+function showUpdateModal(title, message, onConfirm, showProgress = false, notes = null, isManual = false) {
+    const modal = document.getElementById('update-modal');
+    const titleEl = document.getElementById('update-modal-title');
+    const msgEl = document.getElementById('update-modal-message');
+    const laterBtn = document.getElementById('update-later-btn');
+    const nowBtn = document.getElementById('update-now-btn');
+    const actions = document.getElementById('update-modal-actions');
+    const progressContainer = document.getElementById('update-progress-container');
+    const notesWrapper = document.getElementById('update-notes-wrapper');
+    const notesEl = document.getElementById('update-modal-notes');
+    const content = modal.querySelector('.modal-content');
+
+    if (!modal) return;
+
+    // If snoozed and this is an automatic trigger, don't show
+    if (updateSnoozed && !isManual && !showProgress) {
+        console.log("Update modal suppressed (snoozed)");
+        return;
+    }
+
+    titleEl.innerText = title;
+    msgEl.innerText = message;
+
+    // Handle Release Notes
+    if (notes && notesWrapper && notesEl) {
+        notesWrapper.classList.remove('hidden');
+        if (Array.isArray(notes)) {
+            notesEl.innerHTML = `<ul class="list-disc list-inside space-y-1">${notes.map(n => `<li>${n}</li>`).join('')}</ul>`;
+        } else {
+            notesEl.innerHTML = notes.replace(/\n/g, '<br>');
+        }
+    } else if (notesWrapper) {
+        notesWrapper.classList.add('hidden');
+    }
+
+    laterBtn.innerText = t('update_later');
+    nowBtn.innerText = t('update_now');
+
+    if (showProgress) {
+        progressContainer.classList.remove('hidden');
+        actions.classList.add('hidden');
+    } else {
+        progressContainer.classList.add('hidden');
+        actions.classList.remove('hidden');
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+        modal.classList.remove('opacity-0');
+        content.classList.remove('scale-90');
+    }, 10);
+
+    const close = () => {
+        modal.classList.add('opacity-0');
+        content.classList.add('scale-90');
+        setTimeout(() => modal.classList.add('hidden'), 500);
+    };
+
+    laterBtn.onclick = () => {
+        updateSnoozed = true; // Dismiss for the rest of the session
+        close();
+    };
+    nowBtn.onclick = () => {
+        if (!showProgress) {
+            close();
+            onConfirm();
+        }
+    };
+}
+
+if (window.api && window.api.onUpdateAvailable) {
+    window.api.onUpdateAvailable((info) => {
+        if (!updateSnoozed) {
+            showUpdateModal(
+                t('update_title'),
+                t('update_available_msg'),
+                () => {
+                    // Start download if not already started
+                },
+                false // Show prompt first, not progress
+            );
+        }
+    });
+
+    if (window.api.onUpdateProgress) {
+        window.api.onUpdateProgress((progress) => {
+            const bar = document.getElementById('update-progress-bar');
+            const percent = document.getElementById('update-progress-percent');
+            const label = document.getElementById('update-progress-label');
+            const progressContainer = document.getElementById('update-progress-container');
+
+            if (progressContainer) progressContainer.classList.remove('hidden');
+            if (bar) bar.style.width = `${progress.percent}%`;
+            if (percent) percent.innerText = `${Math.round(progress.percent)}%`;
+            if (label) label.innerText = t('downloading');
+        });
+    }
+
+    window.api.onUpdateDownloaded(() => {
+        if (!updateSnoozed) {
+            showUpdateModal(
+                t('update_title'),
+                t('update_downloaded_msg'),
+                () => window.api.restartApp(),
+                false
+            );
+        }
+    });
+}
+
+// --- CUSTOMIZE RELEASE NOTES HERE ---
+const DEFAULT_RELEASE_NOTES = [
+    "تم اصلاح العديد من المشاكل",
+    "واضافة العديد من المزايا بنفس الوقت"
+];
+
+async function syncUpdateStatus(silent = true) {
+    const btn = document.getElementById('manual-update-btn');
+    const versionText = document.getElementById('update-version-text');
+    if (!btn || !versionText) return;
+
+    try {
+        const currentVersion = await window.api.getAppVersion();
+        const result = await window.api.checkForUpdatesManual();
+
+        if (result.success && result.updateInfo && result.updateInfo.version !== currentVersion) {
+            btn.classList.add('text-primary/80');
+            btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+
+            const comparison = t('version_comparison', { current: currentVersion, new: result.updateInfo.version });
+            versionText.innerHTML = `
+                <div id="update-badge-container" class="mb-1">
+                    <span class="px-2 py-0.5 bg-primary text-white rounded-lg text-[8px] font-black uppercase tracking-tighter shadow-sm animate-bounce-subtle">${t('update_avail_status')}</span>
+                </div>
+                <div class="flex items-center gap-1 font-bold" dir="ltr">
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                    <span class="font-mono text-[10px]">${comparison}</span>
+                </div>
+                <div class="flex justify-center mt-1">
+                    <div id="update-indicator-dot" class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-sm"></div>
+                </div>
+            `;
+            btn.disabled = false;
+        } else {
+            btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+            btn.classList.remove('text-primary/80');
+
+            versionText.innerHTML = `
+                <div id="update-badge-container" class="mb-1">
+                    <span class="px-2 py-0.5 bg-outline-variant/10 text-on-surface-variant/40 rounded-lg text-[8px] font-black uppercase tracking-tighter border border-outline-variant/5">${t('latest_status')}</span>
+                </div>
+                <div class="flex items-center gap-1 opacity-40 font-bold" dir="ltr">
+                    <span class="text-[9px] tracking-[0.2em]">Archiva Plus</span>
+                    <span class="font-mono text-[10px]">v${currentVersion}</span>
+                </div>
+            `;
+            btn.disabled = true;
+        }
+    } catch (e) {
+        if (!silent) showToast('status_fail');
+    }
+}
+
+async function handleManualUpdateCheck() {
+    const btn = document.getElementById('manual-update-btn');
+    if (!btn || btn.disabled) return;
+
+    const result = await window.api.checkForUpdatesManual();
+    if (result.success && result.updateInfo) {
+        // You can get real notes from result.updateInfo.releaseNotes or use our default
+        const notes = result.updateInfo.releaseNotes || DEFAULT_RELEASE_NOTES;
+
+        showUpdateModal(
+            t('update_title'),
+            t('update_available_msg'),
+            () => { },
+            true,
+            notes,
+            true // isManual = true
+        );
+    }
+}
+
+// Initial check on load
+// setTimeout(() => syncUpdateStatus(true), 2000); // Removed redundant check, handled by main.js
+
+// Also re-check when settings opens
+document.getElementById('settings-open-btn')?.addEventListener('click', () => {
+    syncUpdateStatus(true);
+});
+
+
+// ============================================================
+// PREVIEW MODAL LOGIC
+// ============================================================
+
+async function openPreview(filePath, type, title) {
+    const modal = document.getElementById('preview-modal');
+    const frame = document.getElementById('preview-frame');
+    const img = document.getElementById('preview-img');
+    const loading = document.getElementById('preview-loading');
+    const filenameEl = document.getElementById('preview-filename');
+    const externalBtn = document.getElementById('preview-external-btn');
+
+    if (!modal || !frame || !img || !loading) return;
+
+    filenameEl.innerText = title || filePath.split(/[\\/]/).pop();
+    modal.classList.remove('hidden');
+    loading.classList.remove('hidden');
+    frame.classList.add('hidden');
+    img.classList.add('hidden');
+    frame.src = '';
+    img.src = '';
+
+    externalBtn.onclick = () => window.api.openPath(filePath);
+
+    try {
+        const dataUri = await window.api.getFileData(filePath);
+        if (!dataUri) {
+            showToast("Failed to load file preview.");
+            modal.classList.add('hidden');
+            return;
+        }
+
+        const isPdf = (type && type.toLowerCase() === 'pdf') || filePath.toLowerCase().endsWith('.pdf');
+
+        if (isPdf) {
+            frame.src = dataUri;
+            frame.classList.remove('hidden');
+        } else {
+            img.src = dataUri;
+            img.classList.remove('hidden');
+        }
+        loading.classList.add('hidden');
+    } catch (e) {
+        console.error('Preview error:', e);
+        showToast("Error loading preview.");
+        modal.classList.add('hidden');
+    }
+}
+
+function closePreview() {
+    const modal = document.getElementById('preview-modal');
+    const frame = document.getElementById('preview-frame');
+    const img = document.getElementById('preview-img');
+    if (modal) modal.classList.add('hidden');
+    if (frame) frame.src = '';
+    if (img) img.src = '';
+}
+
+document.getElementById('preview-close-btn')?.addEventListener('click', closePreview);
+document.getElementById('preview-backdrop')?.addEventListener('click', closePreview);
+
+// ============================================================
+// FINAL INITIALIZATION
+// ============================================================
+
+setTheme(currentTheme);
+updateLayoutDirection();
+updatePipelineUI();
+
+if (window.api && window.api.sendReady) {
+    setTimeout(() => {
+        document.body.classList.remove('loading');
+        window.api.sendReady();
+    }, 250);
+}
+
+// ── Custom Titlebar Controls ──────────────────────────────────────
+(function initTitlebar() {
+    const btnClose = document.getElementById('tb-close');
+    const btnMin   = document.getElementById('tb-min');
+    const btnMax   = document.getElementById('tb-max');
+    if (btnClose && window.api?.closeWindow)    btnClose.addEventListener('click', () => window.api.closeWindow());
+    if (btnMin   && window.api?.minimizeWindow) btnMin.addEventListener('click',   () => window.api.minimizeWindow());
+    if (btnMax   && window.api?.maximizeWindow) btnMax.addEventListener('click',   () => window.api.maximizeWindow());
+})();
+
+// --- Keyboard Shortcuts & History Logic ---
+function pushToHistory(action) {
+    historyStack.push(action);
+    if (historyStack.length > MAX_HISTORY) historyStack.shift();
+}
+
+async function undoAction() {
+    if (historyStack.length === 0) {
+        showToast(currentLang === 'ar' ? 'لا يوجد شيء للتراجع عنه' : 'Nothing to undo');
+        return;
+    }
+
+    const lastAction = historyStack.pop();
+    try {
+        const payload = lastAction.oldData || { [lastAction.field]: lastAction.oldValue };
+        const result = await window.api.updateDocument(lastAction.id, payload);
+        if (result.success) {
+            const docIndex = documents.findIndex(d => d.id == lastAction.id);
+            if (docIndex !== -1) {
+                if (lastAction.oldData) {
+                    Object.assign(documents[docIndex], lastAction.oldData);
+                } else {
+                    documents[docIndex][lastAction.field] = lastAction.oldValue;
+                }
+            }
+            renderArchiveView(document.getElementById('global-search-input')?.value || '');
+            if (activeDocId == lastAction.id) {
+                selectDocument(lastAction.id, true);
+            }
+            showToast(currentLang === 'ar' ? 'تم التراجع عن التعديل' : 'Edit undone');
+        }
+    } catch (e) {
+        console.error('Undo failed:', e);
+    }
+}
+
+function selectAllDocuments() {
+    if (documents.length === 0) return;
+    isSelectionMode = true;
+    selectedDocIds.clear();
+    documents.forEach(doc => selectedDocIds.add(doc.id.toString()));
+    renderArchiveView(document.getElementById('global-search-input')?.value || '');
+    showToast(currentLang === 'ar' ? `تم تحديد ${documents.length} ملف` : `Selected ${documents.length} files`);
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+        return;
+    }
+
+    const key = e.key.toLowerCase();
+    const isZ = key === 'z' || e.code === 'KeyZ';
+    const isA = key === 'a' || e.code === 'KeyA';
+
+    if (e.ctrlKey && isA) {
+        if (currentView === 'archive') {
+            e.preventDefault();
+            selectAllDocuments();
+        }
+    }
+
+    if (e.ctrlKey && isZ) {
+        e.preventDefault();
+        undoAction();
+    }
+});
+
+// ============================================================
+// SECURE FEATURE LOCK SYSTEM
+// ============================================================
+
+let _featuresUnlocked = false;
+
+async function initFeaturesLock() {
+    if (!window.api || !window.api.getFeaturesUnlockStatus) return;
+    _featuresUnlocked = await window.api.getFeaturesUnlockStatus();
+    updateFeatureLockUI();
+}
+
+function updateFeatureLockUI() {
+    // Apply visual locks to protected elements
+    const lockedElements = document.querySelectorAll('[data-protected=\
+true\]');
+    lockedElements.forEach(el => {
+        if (_featuresUnlocked) {
+            el.classList.remove('locked-feature');
+            el.removeAttribute('disabled');
+        } else {
+            el.classList.add('locked-feature');
+            el.setAttribute('disabled', 'true');
+        }
+    });
+}
+
+async function handleUnlockAttempt() {
+    const input = document.getElementById('feature-password-input');
+    const btn = document.getElementById('password-unlock-btn');
+    if (!input || !btn) return;
+
+    const password = input.value.trim();
+    if (!password) return;
+
+    btn.disabled = true;
+    btn.innerText = '...';
+
+    const result = await window.api.validateFeaturePassword(password);
+    if (result.success) {
+        _featuresUnlocked = true;
+        updateFeatureLockUI();
+        togglePasswordModal(false);
+        showToast('access_granted', {}, 4000);
+    } else {
+        showToast('access_denied', {}, 4000);
+        input.classList.add('animate-shake');
+        setTimeout(() => input.classList.remove('animate-shake'), 500);
+    }
+    btn.disabled = false;
+    btn.innerText = currentLang === 'ar' ? 'فتح الخصائص' : 'Unlock Features';
+    input.value = '';
+}
+
+function togglePasswordModal(show) {
+    const modal = document.getElementById('password-modal');
+    if (modal) modal.classList.toggle('hidden', !show);
+    if (show) document.getElementById('feature-password-input')?.focus();
+}
+
+// Attach Listeners
+document.getElementById('password-unlock-btn')?.addEventListener('click', handleUnlockAttempt);
+document.getElementById('password-cancel-btn')?.addEventListener('click', () => togglePasswordModal(false));
+document.getElementById('feature-password-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleUnlockAttempt();
+});
+
+// Call init on load
+initFeaturesLock();
+
+// ============================================================
+// SETTINGS TABS & PROJECT MANAGEMENT
+// ============================================================
+
+function initSettingsTabs() {
+    const tabGenBtn = document.getElementById('tab-general-btn');
+    const tabManBtn = document.getElementById('tab-manager-btn');
+    const tabIndicator = document.getElementById('settings-tab-indicator');
+    const genContent = document.getElementById('tab-general-content');
+    const manContent = document.getElementById('tab-manager-content');
+
+    if (!tabGenBtn || !tabManBtn || !genContent || !manContent) return;
+
+    tabGenBtn.onclick = () => {
+        genContent.classList.remove('hidden', 'opacity-0', 'translate-y-8', 'pointer-events-none');
+        genContent.classList.add('opacity-100', 'translate-y-0');
+        manContent.classList.remove('opacity-100', 'translate-y-0');
+        manContent.classList.add('hidden', 'opacity-0', 'translate-y-8', 'pointer-events-none');
+        updateSegmentedIndicators();
+    };
+
+    tabManBtn.onclick = async () => {
+
+        manContent.classList.remove('hidden', 'opacity-0', 'translate-y-8', 'pointer-events-none');
+        manContent.classList.add('opacity-100', 'translate-y-0');
+        genContent.classList.remove('opacity-100', 'translate-y-0');
+        genContent.classList.add('hidden', 'opacity-0', 'translate-y-8', 'pointer-events-none');
+        updateSegmentedIndicators();
+        renderProjectsList();
+    };
+}
+
+// Add Project Logic
+const addProjectBtn = document.getElementById('add-project-btn');
+if (addProjectBtn) {
+    addProjectBtn.addEventListener('click', async () => {
+        const type = document.getElementById('new-project-type').value;
+        const code = document.getElementById('new-project-code').value.trim();
+        const name = document.getElementById('new-project-name').value.trim();
+
+        if (!code || !name) {
+            showToast(currentLang === 'ar' ? 'يرجى إدخال الكود والاسم' : 'Please enter code and name', {}, 3000);
+            return;
+        }
+
+        if (!/^\d+$/.test(code)) {
+            showToast(currentLang === 'ar' ? 'الكود يجب أن يكون أرقام فقط' : 'Code must be digits only', {}, 3000);
+            return;
+        }
+
+        try {
+            const success = await window.api.addProjectMapping(type === 'صادر' ? 'Sader' : 'Wared', code, name);
+            if (success) {
+                showToast(currentLang === 'ar' ? 'تمت إضافة المشروع بنجاح!' : 'Project added successfully!', {}, 4000);
+                document.getElementById('new-project-code').value = '';
+                document.getElementById('new-project-name').value = '';
+                renderProjectsList(); // Refresh the list
+            } else {
+                showToast(currentLang === 'ar' ? 'خطأ في الحفظ' : 'Error saving mapping', {}, 4000);
+            }
+        } catch (e) {
+            console.error('Add mapping error:', e);
+            showToast('error_occurred', {}, 4000);
+        }
+    });
+}
+
+// Global function for deleting project mapping
+window.deleteProjectMapping = async (type, code, name) => {
+    const customMsg = currentLang === 'ar'
+        ? `هل أنت متأكد من حذف المشروع "${name}" (${code}) نهائياً من قائمة النظام؟`
+        : `Are you sure you want to permanently delete the project "${name}" (${code}) from the system list?`;
+
+    const confirmed = await confirmAction('confirm_title', '', 'delete', customMsg);
+    if (!confirmed) return;
+
+    try {
+        const success = await window.api.deleteProjectMapping(type, code);
+        if (success) {
+            showToast(currentLang === 'ar' ? 'تم الحذف بنجاح' : 'Deleted successfully', {}, 3000);
+            renderProjectsList(); // Refresh list
+        } else {
+            showToast(currentLang === 'ar' ? 'خطأ في الحذف' : 'Error deleting', {}, 3000);
+        }
+    } catch (e) {
+        console.error("Delete mapping error:", e);
+        showToast('error_occurred', {}, 3000);
+    }
+};
+
+// Render the existing projects list
+async function renderProjectsList() {
+    const container = document.getElementById('projects-list-container');
+    if (!container) return;
+
+    try {
+        const mappings = await window.api.getMappings();
+        if (!mappings) return;
+
+        let html = '';
+        const saderLabel = currentLang === 'ar' ? 'صادر' : 'Outgoing';
+        const waredLabel = currentLang === 'ar' ? 'وارد' : 'Incoming';
+
+        // Combine both mappings with type labels
+        const allItems = [];
+        if (mappings.sader) {
+            Object.entries(mappings.sader).forEach(([code, name]) => {
+                allItems.push({ code, name, type: 'sader', label: saderLabel });
+            });
+        }
+        if (mappings.wared) {
+            Object.entries(mappings.wared).forEach(([code, name]) => {
+                allItems.push({ code, name, type: 'wared', label: waredLabel });
+            });
+        }
+
+        // Sort items by code descending so newest/highest codes appear at the top
+        allItems.sort((a, b) => {
+            const numA = parseInt(a.code) || 0;
+            const numB = parseInt(b.code) || 0;
+            return numB - numA;
+        });
+
+        if (allItems.length === 0) {
+            container.innerHTML = `<p class="text-[10px] text-on-surface-variant/40 text-center py-4">${currentLang === 'ar' ? 'لا توجد مشاريع بعد' : 'No projects yet'}</p>`;
+            return;
+        }
+
+        allItems.forEach(item => {
+            html += `
+                <div class="flex items-center justify-between gap-3 px-4 py-3 bg-surface-container-highest/60 rounded-xl border border-outline-variant/5 hover:border-primary/20 transition-all">
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <span class="text-[10px] font-mono font-black text-primary bg-primary/10 px-2 py-1 rounded-lg flex-shrink-0">${item.code}</span>
+                        <span class="text-xs font-bold text-on-surface truncate">${item.name}</span>
+                    </div>
+                    <div class="flex items-center gap-3 flex-shrink-0">
+                        <span class="text-[8px] font-black uppercase tracking-widest ${item.type === 'sader' ? 'text-blue-500' : 'text-emerald-500'}">${item.label}</span>
+                        <button onclick="deleteProjectMapping('${item.type}', '${item.code}', '${item.name.replace(/'/g, "\\'")}')" class="p-1.5 rounded-lg text-on-surface-variant/40 hover:text-error hover:bg-error/10 transition-colors" title="${currentLang === 'ar' ? 'حذف' : 'Delete'}">
+                            ${getIcon('delete', 'xs')}
+                        </button>
+                    </div>
+                </div>`;
+        });
+
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('Error loading mappings:', e);
+    }
+}
+
+// Ensure tabs are initialized
+initSettingsTabs();
+updateFilterUI();

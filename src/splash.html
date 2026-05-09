@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archiva Plus - Loading</title>
+    <style>
+        :root {
+            --primary: #007acc;
+            --primary-dim: #0062a3;
+            --background: #ffffff;
+            --text: #283439;
+            --glass: rgba(255, 255, 255, 0.8);
+            --border: rgba(0, 122, 204, 0.1);
+            --cubic: cubic-bezier(0.2, 0, 0, 1);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --background: #1e1e1e;
+                --text: #d4d4d4;
+                --glass: rgba(30, 30, 30, 0.8);
+                --border: rgba(255, 255, 255, 0.1);
+            }
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--background);
+            color: var(--text);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            -webkit-app-region: drag;
+        }
+
+        .splash-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .logo-box {
+            width: 120px;
+            height: 120px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .logo-box img {
+            width: 70px;
+            height: 70px;
+            object-fit: contain;
+        }
+
+        .text-container {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .brand-name {
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            color: var(--primary);
+            margin: 0;
+        }
+
+        .status-text {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            opacity: 0.5;
+            margin: 0;
+        }
+
+        .loader-bar {
+            width: 140px;
+            height: 3px;
+            background: var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            margin-top: 0.5rem;
+        }
+
+        .loader-progress {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 30%;
+            background: var(--primary);
+            border-radius: 10px;
+            animation: slide 1.5s infinite var(--cubic);
+        }
+
+        @keyframes slide {
+            0% { left: -30%; }
+            100% { left: 100%; }
+        }
+
+        /* Simple Background */
+        .ambient {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, var(--primary) 0%, transparent 70%);
+            opacity: 0.05;
+            filter: blur(60px);
+            z-index: -1;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient"></div>
+    <div class="splash-container">
+        <div class="logo-box">
+            <img src="../logo/logo.png" alt="Logo">
+        </div>
+        <div class="text-container">
+            <h1 class="brand-name">Archiva Plus</h1>
+            <p class="status-text">جاري التحميل...</p>
+            <div class="loader-bar">
+                <div class="loader-progress"></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
