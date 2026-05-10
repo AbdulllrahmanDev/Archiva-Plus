@@ -4,6 +4,7 @@ import sys
 import json
 import unicodedata
 import hashlib
+import ctypes
 
 if sys.platform == "win32":
     import io
@@ -13,7 +14,7 @@ if sys.platform == "win32":
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from processor import process_file
-from db_manager import initialize_db, rebuild_index, rebuild_index_recursive, set_db_path, get_db_path, get_document_status
+from db_manager import initialize_db, rebuild_index, rebuild_index_recursive, set_db_path, get_db_path, get_document_status, rename_document_path, rename_folder_path
 
 _processing_lock = set()
 _recently_seen   = {}   
@@ -193,10 +194,47 @@ class ArchiveHandler(FileSystemEventHandler):
             _processing_lock.discard(src_path)
 
     def on_moved(self, event):
-        if event.is_directory:
-            return
         src_path  = unicodedata.normalize('NFC', event.src_path)
         dest_path = unicodedata.normalize('NFC', event.dest_path)
+
+        if event.is_directory:
+            print(f"Watcher: Folder moved/renamed: {os.path.basename(src_path)} -> {os.path.basename(dest_path)}", flush=True)
+            try:
+                # 1. Update Database for all files inside
+                rename_folder_path(src_path, dest_path)
+                
+                # 2. Update Sidecars for all files inside (since absolute paths changed)
+                for root, dirs, files in os.walk(dest_path):
+                    for filename in files:
+                        if filename.lower().endswith('.json') and filename != 'manifest.json' and filename != 'mappings.json':
+                            sidecar_path = os.path.join(root, filename)
+                            try:
+                                # Windows Fix: Temporarily un-hide
+                                if sys.platform == "win32":
+                                    try: ctypes.windll.kernel32.SetFileAttributesW(sidecar_path, 0x80)
+                                    except: pass
+                                
+                                with open(sidecar_path, 'r', encoding='utf-8') as f:
+                                    data = json.load(f)
+                                
+                                # Update path if it was absolute and matched old location
+                                old_fp = data.get('file_path', '')
+                                if old_fp and old_fp.startswith(src_path):
+                                    data['file_path'] = old_fp.replace(src_path, dest_path, 1)
+                                    
+                                    with open(sidecar_path, 'w', encoding='utf-8') as f:
+                                        json.dump(data, f, ensure_ascii=False, indent=2)
+                                
+                                if sys.platform == "win32":
+                                    try: ctypes.windll.kernel32.SetFileAttributesW(sidecar_path, 0x02) # Hidden
+                                    except: pass
+                            except Exception as e:
+                                print(f"Watcher: Error updating sidecar in moved folder: {e}", flush=True)
+
+                print(json.dumps({"type": "sync_complete"}, ensure_ascii=False), flush=True)
+            except Exception as e:
+                print(f"Error updating DB for folder move: {e}", flush=True)
+            return
 
         # 1. Skip system files, DB files, and temporary files
         basename = os.path.basename(dest_path)
@@ -209,9 +247,50 @@ class ArchiveHandler(FileSystemEventHandler):
 
         src_abs  = os.path.abspath(src_path)
         src_base = os.path.abspath(self.folder_path)
-        if src_abs.startswith(src_base + os.sep) or src_abs == src_base:
-            return  
+        
+        # Check if the move was internal (within the archive)
+        is_internal = src_abs.startswith(src_base + os.sep) or src_abs == src_base
 
+        if is_internal:
+            # Internal rename or move
+            print(f"Watcher: Internal move detected: {os.path.basename(src_path)} -> {os.path.basename(dest_path)}", flush=True)
+            try:
+                # Update Sidecar if it exists
+                old_sidecar = os.path.splitext(src_path)[0] + ".json"
+                new_sidecar = os.path.splitext(dest_path)[0] + ".json"
+                
+                if os.path.exists(old_sidecar):
+                    # Windows Fix: Temporarily un-hide
+                    if sys.platform == "win32":
+                        try: ctypes.windll.kernel32.SetFileAttributesW(old_sidecar, 0x80)
+                        except: pass
+                    
+                    try:
+                        with open(old_sidecar, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        
+                        data['file'] = os.path.basename(dest_path)
+                        data['file_path'] = dest_path
+                        
+                        with open(old_sidecar, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        
+                        os.rename(old_sidecar, new_sidecar)
+                        
+                        if sys.platform == "win32":
+                            try: ctypes.windll.kernel32.SetFileAttributesW(new_sidecar, 0x02) # Hidden
+                            except: pass
+                    except Exception as e:
+                        print(f"Watcher: Error updating sidecar: {e}", flush=True)
+                
+                # Update Database
+                rename_document_path(src_path, dest_path, new_filename=os.path.basename(dest_path))
+                print(json.dumps({"type": "sync_complete"}, ensure_ascii=False), flush=True)
+            except Exception as e:
+                print(f"Watcher: Error handling internal move: {e}", flush=True)
+            return
+
+        # External move into the archive (acts like a creation)
         if not self._should_process(dest_path):
             return
         self._mark_seen(dest_path)  
@@ -225,6 +304,8 @@ class ArchiveHandler(FileSystemEventHandler):
             file_name = os.path.basename(dest_path)
             normalized_name = unicodedata.normalize("NFC", file_name)
             file_id = hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:24]
+            
+            # ... (rest of the processing logic) ...
             sentinel_dir = os.path.join(self.folder_path, '.archiva-plus')
             force_ai_file = os.path.join(sentinel_dir, f'force_ai_{file_id}.tmp')
             if os.path.exists(force_ai_file):
@@ -233,7 +314,7 @@ class ArchiveHandler(FileSystemEventHandler):
                 try: os.remove(force_ai_file)
                 except: pass
 
-            # ── SMART OVERRIDE: code-named files are always organized even with auto-analysis off
+            # ── SMART OVERRIDE: code-named files
             if skip_organize:
                 from processor import parse_archiva_code, SADER_MAPPING, WARED_MAPPING
                 _raw = os.path.splitext(file_name)[0]
@@ -246,7 +327,6 @@ class ArchiveHandler(FileSystemEventHandler):
             split_pdf = _read_sentinel_split_enabled()
             smart_match = _read_sentinel_smart_match_enabled()
 
-            # FINAL SAFETY CHECK: If status was set to 'stopped' by main.js (Force Stop), skip it.
             if get_document_status(file_id) == 'stopped':
                 print(f"Skipping {file_name} because it was manually STOPPED.", flush=True)
                 return

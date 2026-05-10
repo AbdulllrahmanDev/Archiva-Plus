@@ -2143,6 +2143,11 @@ async function openFolderRenameEditor(el, relativePath) {
 
             const result = await window.api.renameFolder(oldAbsPath, newAbsPath);
             if (result.success) {
+                // If the renamed folder was part of our current path, update currentDirectory
+                if (currentDirectory.startsWith(relativePath)) {
+                    currentDirectory = currentDirectory.replace(relativePath, (parentRelativePath ? parentRelativePath + '/' : '') + newName);
+                }
+
                 // Refresh documents and view
                 const docs = await window.api.getDocuments();
                 documents = docs || [];

@@ -798,43 +798,61 @@ ipcMain.handle('rename-folder', async (event, oldPath, newPath) => {
         // 1. Rename physical folder
         fs.renameSync(oldPath, newPath);
 
-        // 2. Update all document paths in database
-        // We use a prefix match for paths
-        const oldPrefix = oldPath.endsWith(path.sep) ? oldPath : oldPath + path.sep;
-        const newPrefix = newPath.endsWith(path.sep) ? newPath : newPath + path.sep;
-
-        return new Promise((resolve) => {
-            db.all("SELECT id, file_path FROM documents WHERE file_path LIKE ?", [oldPath + '%'], (err, rows) => {
+        // 2. Update all document paths in database using a more efficient query
+        await new Promise((resolve, reject) => {
+            const sql = `
+                UPDATE documents 
+                SET file_path = ? || substr(file_path, ?)
+                WHERE file_path LIKE ?
+            `;
+            const lengthPlusOne = oldPath.length + 1;
+            db.run(sql, [newPath, lengthPlusOne, oldPath + '%'], function (err) {
                 if (err) {
-                    console.error('[DB] Rename folder SELECT error:', err);
-                    return resolve({ success: false, error: err.message });
+                    console.error('[DB] Rename folder UPDATE error:', err);
+                    reject(err);
+                } else {
+                    console.log(`[DB] Updated ${this.changes} document paths for folder rename`);
+                    resolve();
                 }
-
-                if (rows.length === 0) return resolve({ success: true });
-
-                let updatedCount = 0;
-                let errorOccurred = false;
-
-                rows.forEach(row => {
-                    // Double check with JS startsWith because LIKE can be fuzzy with %
-                    if (row.file_path && row.file_path.startsWith(oldPath)) {
-                        const updatedPath = row.file_path.replace(oldPath, newPath);
-                        db.run("UPDATE documents SET file_path = ? WHERE id = ?", [updatedPath, row.id], (updErr) => {
-                            if (updErr) errorOccurred = true;
-                            updatedCount++;
-                            if (updatedCount === rows.length) {
-                                resolve({ success: !errorOccurred });
-                            }
-                        });
-                    } else {
-                        updatedCount++;
-                        if (updatedCount === rows.length) {
-                            resolve({ success: !errorOccurred });
-                        }
-                    }
-                });
             });
         });
+
+        // 3. Proactively update sidecar JSON files in the background
+        const updateSidecars = async (dir) => {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    await updateSidecars(fullPath);
+                } else if (entry.name.toLowerCase().endsWith('.json') && entry.name !== 'manifest.json' && entry.name !== 'mappings.json') {
+                    try {
+                        if (process.platform === 'win32') {
+                            try { require('child_process').execSync(`attrib -h "${fullPath}"`); } catch (e) { }
+                        }
+
+                        const data = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+                        if (data.file_path && data.file_path.startsWith(oldPath)) {
+                            data.file_path = data.file_path.replace(oldPath, newPath);
+                            fs.writeFileSync(fullPath, JSON.stringify(data, null, 2), 'utf8');
+                        }
+
+                        if (process.platform === 'win32') {
+                            try { require('child_process').exec(`attrib +h "${fullPath}"`, () => { }); } catch (e) { }
+                        }
+                    } catch (e) {
+                        console.error(`[Main] Error updating sidecar ${fullPath}:`, e);
+                    }
+                }
+            }
+        };
+
+        // Run sidecar update without awaiting to keep UI responsive
+        updateSidecars(newPath).catch(err => console.error('[Main] Sidecar update error:', err));
+
+        // 4. Notify renderer to refresh
+        sendUpdateToRenderer();
+
+        return { success: true };
     } catch (err) {
         console.error('[IPC] rename-folder error:', err);
         return { success: false, error: err.message };

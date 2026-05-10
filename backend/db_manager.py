@@ -220,6 +220,39 @@ def delete_document(doc_id):
     conn.commit()
     conn.close()
 
+def rename_document_path(old_path, new_path, new_filename=None):
+    """Updates the path of a document when it is renamed or moved."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    if new_filename:
+        cursor.execute('UPDATE documents SET file_path = ?, file = ? WHERE file_path = ?', (new_path, new_filename, old_path))
+    else:
+        cursor.execute('UPDATE documents SET file_path = ? WHERE file_path = ?', (new_path, old_path))
+    conn.commit()
+    conn.close()
+
+def rename_folder_path(old_folder_path, new_folder_path):
+    """Updates all document paths that were inside a renamed folder."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Use standard path separators and handle the trailing slash
+    old_folder_path = os.path.abspath(old_folder_path)
+    new_folder_path = os.path.abspath(new_folder_path)
+    
+    # We need to find all documents whose path starts with the old folder path
+    cursor.execute('SELECT id, file_path FROM documents WHERE file_path LIKE ?', (old_folder_path + '%',))
+    rows = cursor.fetchall()
+    
+    for row in rows:
+        doc_id, file_path = row
+        if file_path.startswith(old_folder_path):
+            new_file_path = file_path.replace(old_folder_path, new_folder_path, 1)
+            cursor.execute('UPDATE documents SET file_path = ? WHERE id = ?', (new_file_path, doc_id))
+            
+    conn.commit()
+    conn.close()
+
 if __name__ == '__main__':
     initialize_db()
     print("Database initialized.", flush=True)
