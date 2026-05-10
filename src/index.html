@@ -809,15 +809,13 @@
             <div
                 class="px-10 py-8 border-t border-outline-variant/5 bg-surface-container-low/20 flex flex-col items-center gap-4">
                 <div class="flex flex-col items-center gap-2">
-                    <p
-                        class="text-[7px] font-black uppercase tracking-[0.4em] text-on-surface-variant/20 pointer-events-none">
-                        Check for updates</p>
+
                     <button id="manual-update-btn" onclick="handleManualUpdateCheck()"
-                        class="group relative flex items-center justify-center bg-transparent border-none outline-none focus:outline-none p-0"
-                        type="button">
-                        <span
-                            class="px-4 py-1.5 bg-primary/10 text-primary rounded-full text-[9px] font-black uppercase tracking-widest border border-primary/20 group-hover:bg-primary group-hover:text-white transition-all duration-300">Archiva
-                            Plus v1.4.3</span>
+                        class="group relative flex items-center justify-center bg-transparent border-none outline-none focus:outline-none p-0 text-on-surface-variant/40 pointer-events-none cursor-default"
+                        type="button" disabled>
+                        <div id="update-version-text"
+                            class="px-4 py-1.5 bg-outline-variant/5 text-on-surface-variant/40 rounded-full text-[9px] font-black uppercase tracking-widest border border-outline-variant/10 transition-all duration-300">Archiva
+                            Plus v1.4.3</div>
                     </button>
                 </div>
                 <a href="https://github.com/AbdulllrahmanDev"
@@ -1040,6 +1038,8 @@
     </button>
 
     <script src="renderer.js"></script>
+    <!-- Custom Context Menu Container -->
+    <div id="custom-context-menu" class="custom-context-menu"></div>
 </body>
 
 </html>

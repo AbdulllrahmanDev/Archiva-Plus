@@ -1624,3 +1624,44 @@ html[dir="rtl"] .force-right-scroll>* {
 html[dir="ltr"] .force-right-scroll>* {
     direction: ltr;
 }
+/* Custom Context Menu */
+.custom-context-menu {
+    position: fixed;
+    z-index: 10000;
+    background: var(--surface-container-highest);
+    border: 1px solid var(--outline-variant);
+    border-radius: 1rem;
+    padding: 0.5rem;
+    min-width: 180px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    display: none;
+    animation: contextScale 0.2s var(--cubic-premium);
+}
+
+@keyframes contextScale {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+.context-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    color: var(--on-surface);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.context-item:hover {
+    background: var(--primary);
+    color: white;
+}
+
+.context-item .icon-svg {
+    width: 18px;
+    height: 18px;
+}

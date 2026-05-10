@@ -14,6 +14,8 @@ let archiveLayout = 'grid';
 let isSelectionMode = false;
 let selectedDocIds = new Set();
 let activeFilters = { type: [], class: [], year: [], project: [], recency: false };
+let currentDirectory = "";
+let storageBasePath = "";
 
 let viewsInitialized = false;
 let activeDocId = null;
@@ -140,7 +142,7 @@ const SVG_ICONS = {
     folder_managed: 'M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 10H6v-2h12v2zm0-4H6v-2h12v2z',
     task_alt: 'M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z',
     sync: 'M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z',
-    category: 'M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.87L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5zM3 21.5h8v-8H3v8zm2-6h4v4H5v-4z',
+    category: 'M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 8h10v2H7zm0 3h10v2H7zm0 3h7v2H7z',
     label: 'M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16zM16 17H5V7h11l3.55 5L16 17z',
     calendar_today: 'M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13z',
     folder: 'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z'
@@ -353,7 +355,7 @@ const i18n = {
         settings_subtitle: "تكوين النظام",
         filter_title: "فلاتر البحث المتقدمة",
         filter_search_placeholder: "ابحث في الفلاتر...",
-        filter_items_suffix: "عناصر",
+        filter_items_suffix: "ملف",
         filter_type: "نوع الوثيقة",
         filter_class: "تصنيف الوثيقة",
         filter_year: "السنة",
@@ -805,6 +807,7 @@ const getViews = () => ({
                     </div>
                 </div>
                 <div class="col-span-12 lg:col-span-7 xl:col-span-8">
+                    <div id="archive-breadcrumb" class="mb-6 flex items-center gap-2 text-sm font-bold text-on-surface-variant flex-wrap"></div>
                     <div id="archive-render-target" class="w-full h-full min-h-[400px]"></div>
                 </div>
             </div>
@@ -1588,8 +1591,12 @@ function switchView(viewName) {
     moveNavIndicator(viewName);
 
     if (viewName === 'archive') {
-        window.api.getDocuments().then(docs => {
+        window.api.getStorageFolder().then(path => {
+            storageBasePath = path;
+            return window.api.getDocuments();
+        }).then(docs => {
             documents = docs || [];
+            currentDirectory = "";
             const currentInput = document.getElementById('global-search-input');
             renderArchiveView(currentInput ? currentInput.value : '');
             buildDynamicFilterMenu(); // Populate filters from real data
@@ -1838,46 +1845,143 @@ function groupDocumentsByDate(docs) {
         .map(key => ({ key, label: t(key), docs: groups[key] }));
 }
 
+function getFolderContents(docs, basePath, currentDir) {
+    const folders = new Map();
+    const files = [];
+
+    basePath = (basePath || '').replace(/\\/g, '/');
+    if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
+
+    docs.forEach(doc => {
+        let abs = (doc.file_path || '').replace(/\\/g, '/');
+        let relPath = abs;
+        
+        if (abs.toLowerCase().startsWith(basePath.toLowerCase() + '/')) {
+            relPath = abs.substring(basePath.length + 1);
+        } else {
+            relPath = abs.split('/').pop();
+        }
+
+        let prefix = currentDir ? currentDir + "/" : "";
+        if (relPath.startsWith(prefix) || currentDir === "") {
+            let remainder = currentDir === "" ? relPath : relPath.substring(prefix.length);
+            
+            let slashIndex = remainder.indexOf('/');
+            if (slashIndex !== -1) {
+                let folderName = remainder.substring(0, slashIndex);
+                if (!folders.has(folderName)) {
+                    folders.set(folderName, {
+                        type: 'folder',
+                        name: folderName,
+                        path: prefix + folderName,
+                        docCount: 0
+                    });
+                }
+                folders.get(folderName).docCount++;
+            } else {
+                files.push(doc);
+            }
+        }
+    });
+
+    return {
+        folders: Array.from(folders.values()).sort((a, b) => a.name.localeCompare(b.name)),
+        files: files.sort((a, b) => new Date(b.date_added) - new Date(a.date_added))
+    };
+}
+
+function navigateToFolder(path) {
+    // Prevent navigation if we are currently renaming a folder
+    if (document.querySelector('#archive-render-target input')) return;
+    
+    currentDirectory = path;
+    const currentInput = document.getElementById('global-search-input');
+    renderArchiveView(currentInput ? currentInput.value : '');
+}
+
+function renderBreadcrumb(container) {
+    if (!container) return;
+    if (!currentDirectory) {
+        container.innerHTML = `<div class="px-4 py-2 bg-surface-container-low rounded-xl text-primary font-black uppercase tracking-widest text-[10px] shadow-sm">${currentLang === 'ar' ? 'المجلد الرئيسي' : 'Home'}</div>`;
+        return;
+    }
+
+    const parts = currentDirectory.split('/');
+    let html = `<div class="flex items-center gap-2 flex-wrap">`;
+    html += `<button class="px-4 py-2 hover:bg-surface-container-high bg-surface-container-low rounded-xl text-on-surface-variant font-black uppercase tracking-widest text-[10px] transition-all shadow-sm" onclick="navigateToFolder('')">${currentLang === 'ar' ? 'المجلد الرئيسي' : 'Home'}</button>`;
+    
+    let pathAcc = "";
+    parts.forEach((part, index) => {
+        pathAcc += (index === 0 ? part : "/" + part);
+        html += `<span class="text-outline-variant/50 font-bold">/</span>`;
+        if (index === parts.length - 1) {
+            html += `<span class="px-4 py-2 bg-primary/10 text-primary rounded-xl font-black uppercase tracking-widest text-[10px] shadow-sm">${part}</span>`;
+        } else {
+            const currentPathAcc = pathAcc;
+            html += `<button class="px-4 py-2 hover:bg-surface-container-high bg-surface-container-low rounded-xl text-on-surface-variant font-black uppercase tracking-widest text-[10px] transition-all shadow-sm" onclick="navigateToFolder('${currentPathAcc}')">${part}</button>`;
+        }
+    });
+    html += `</div>`;
+    container.innerHTML = html;
+}
+
 function renderArchiveView(term = '') {
     const target = document.getElementById('archive-render-target');
     const totalAssetsEl = document.getElementById('total-assets');
+    const breadcrumbContainer = document.getElementById('archive-breadcrumb');
     if (!target) return;
 
-    // --- Fuzzy search + scoring ---
-    let scored = documents.map(doc => ({ doc, score: fuzzyScore(doc, term) }));
+    const isSearchActive = term.trim() !== '' || activeFilters.type.length > 0 || activeFilters.class.length > 0 || activeFilters.year.length > 0 || activeFilters.project.length > 0 || activeFilters.recency;
 
-    // Sort by relevance when searching, preserve date order otherwise
-    if (term && term.trim()) {
-        scored.sort((a, b) => b.score - a.score);
-    }
-    let filtered = scored.filter(({ score }) => score > 0).map(({ doc }) => doc);
+    let filtered = [];
 
-    // --- Smart dynamic filters ---
-    if (activeFilters.year && activeFilters.year.length > 0)
-        filtered = filtered.filter(d => activeFilters.year.includes(String(d.doc_date || '').split('-')[0]));
-    if (activeFilters.project && activeFilters.project.length > 0)
-        filtered = filtered.filter(d => activeFilters.project.includes(d.project));
-    if (activeFilters.type && activeFilters.type.length > 0)
-        filtered = filtered.filter(d => activeFilters.type.includes(d.type));
+    if (isSearchActive) {
+        let scored = documents.map(doc => ({ doc, score: fuzzyScore(doc, term) }));
 
-    // Sort and Group by date_added when recency is active
-    let groupedData = null;
-    if (activeFilters.recency) {
-        filtered.sort((a, b) => new Date(b.date_added) - new Date(a.date_added));
-        groupedData = groupDocumentsByDate(filtered);
-    }
+        if (term && term.trim()) {
+            scored.sort((a, b) => b.score - a.score);
+        }
+        filtered = scored.filter(({ score }) => score > 0).map(({ doc }) => doc);
 
-    if (activeFilters.class && activeFilters.class.length > 0)
-        filtered = filtered.filter(d => activeFilters.class.includes(d.class));
+        if (activeFilters.year && activeFilters.year.length > 0)
+            filtered = filtered.filter(d => activeFilters.year.includes(String(d.doc_date || '').split('-')[0]));
+        if (activeFilters.project && activeFilters.project.length > 0)
+            filtered = filtered.filter(d => activeFilters.project.includes(d.project));
+        if (activeFilters.type && activeFilters.type.length > 0)
+            filtered = filtered.filter(d => activeFilters.type.includes(d.type));
+        if (activeFilters.class && activeFilters.class.length > 0)
+            filtered = filtered.filter(d => activeFilters.class.includes(d.class));
 
-    if (totalAssetsEl) totalAssetsEl.innerText = filtered.length;
+        let groupedData = null;
+        if (activeFilters.recency) {
+            filtered.sort((a, b) => new Date(b.date_added) - new Date(a.date_added));
+            groupedData = groupDocumentsByDate(filtered);
+        }
 
-    if (!isSelectionMode) selectedDocIds.clear();
+        if (totalAssetsEl) totalAssetsEl.innerText = filtered.length;
 
-    if (archiveLayout === 'grid') {
-        renderArchiveGrid(groupedData || filtered, target, !!groupedData);
+        if (!isSelectionMode) selectedDocIds.clear();
+
+        if (breadcrumbContainer) breadcrumbContainer.innerHTML = `<div class="px-4 py-2 bg-surface-container-low rounded-xl text-primary font-black uppercase tracking-widest text-[10px] shadow-sm">${currentLang === 'ar' ? 'نتائج البحث' : 'Search Results'}</div>`;
+
+        if (archiveLayout === 'grid') {
+            renderArchiveGrid(groupedData || filtered, target, !!groupedData);
+        } else {
+            renderArchiveList(groupedData || filtered, target, !!groupedData);
+        }
     } else {
-        renderArchiveList(groupedData || filtered, target, !!groupedData);
+        const folderContents = getFolderContents(documents, storageBasePath, currentDirectory);
+        
+        if (totalAssetsEl) totalAssetsEl.innerText = folderContents.files.length + folderContents.folders.length;
+        if (!isSelectionMode) selectedDocIds.clear();
+
+        renderBreadcrumb(breadcrumbContainer);
+
+        if (archiveLayout === 'grid') {
+            renderFolderGrid(folderContents, target);
+        } else {
+            renderFolderList(folderContents, target);
+        }
     }
 
     const gridToggle = document.getElementById('toggle-grid-view');
@@ -1893,6 +1997,213 @@ function renderArchiveView(term = '') {
         clearBtn.classList.toggle('opacity-100', isSelectionMode);
     }
 }
+
+function renderFolderGrid(contents, container) {
+    if (contents.folders.length === 0 && contents.files.length === 0) {
+        container.innerHTML = `<div class="p-12 text-center text-on-surface-variant opacity-50">${t('archive_empty')}</div>`;
+        return;
+    }
+
+    let html = '<div class="curator-grid">';
+    
+    contents.folders.forEach(folder => {
+        html += renderGridFolderCard(folder);
+    });
+
+    contents.files.forEach(doc => {
+        html += renderGridCard(doc);
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.delete-doc-btn').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            const id = btn.getAttribute('data-id');
+            const path = btn.getAttribute('data-path');
+            handleDeleteDocument(id, path);
+        };
+    });
+}
+
+function renderGridFolderCard(folder) {
+    return `
+        <div class="curator-card group cursor-pointer relative overflow-hidden bg-surface-container-lowest border border-outline-variant/10 rounded-[2rem] transition-all duration-500 hover:border-primary/40 hover:-translate-y-2 hover:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.12)] select-none" 
+            ondblclick="navigateToFolder('${folder.path}')"
+            oncontextmenu="event.preventDefault(); event.stopPropagation(); showFolderContextMenu(event, '${folder.path.replace(/'/g, "\\'")}')">
+            
+            <div class="card-preview h-48 bg-primary/5 relative flex items-center justify-center overflow-hidden">
+                <div class="relative z-10 transition-all duration-700 group-hover:scale-110 flex flex-col items-center gap-3 text-primary">
+                    ${getIcon('folder', 'xl')}
+                </div>
+            </div>
+
+            <div class="card-content p-6 flex flex-col gap-4">
+                <div class="space-y-2 text-center">
+                    <h4 class="folder-title font-headline font-bold text-on-surface text-lg leading-snug line-clamp-2 transition-colors group-hover:text-primary select-none" 
+                        dir="auto">${folder.name}</h4>
+                    <span class="px-2 py-0.5 bg-surface-container-low text-on-surface-variant/60 text-[9px] font-black uppercase tracking-widest rounded-md">${folder.docCount} ${t('filter_items_suffix')}</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderFolderList(contents, container) {
+    if (contents.folders.length === 0 && contents.files.length === 0) {
+        container.innerHTML = `<div class="p-12 text-center text-on-surface-variant opacity-50">${t('archive_empty')}</div>`;
+        return;
+    }
+
+    let html = `<div class="bg-surface-container-lowest rounded-3xl editorial-shadow overflow-hidden border border-outline-variant/10 divide-y divide-outline-variant/5">`;
+
+    html += `
+        <div class="grid grid-cols-12 px-8 py-5 text-[0.65rem] font-black uppercase tracking-[0.2em] text-on-surface-variant/40 font-label">
+            <div class="col-span-8 flex items-center gap-4">
+                ${isSelectionMode ? '<div class="w-5"></div>' : ''}
+                ${currentLang === 'ar' ? 'الاسم' : 'Name'}
+            </div>
+            <div class="col-span-4 text-right rtl:text-left">${currentLang === 'ar' ? 'التفاصيل' : 'Details'}</div>
+        </div>
+    `;
+
+    contents.folders.forEach(folder => {
+        html += renderListFolderRow(folder);
+    });
+
+    contents.files.forEach(doc => {
+        html += renderListRow(doc);
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.delete-doc-btn').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            const id = btn.getAttribute('data-id');
+            const path = btn.getAttribute('data-path');
+            handleDeleteDocument(id, path);
+        };
+    });
+}
+
+function renderListFolderRow(folder) {
+    return `
+        <div class="grid grid-cols-12 px-10 py-7 items-center hover:bg-surface-container-low transition-all cursor-pointer group select-none" 
+            ondblclick="navigateToFolder('${folder.path}')"
+            oncontextmenu="event.preventDefault(); event.stopPropagation(); showFolderContextMenu(event, '${folder.path.replace(/'/g, "\\'")}')">
+            <div class="col-span-8 flex items-center gap-6">
+                ${isSelectionMode ? '<div class="w-6 h-6"></div>' : ''}
+                <div class="w-14 h-14 flex-shrink-0 bg-primary/10 rounded-2xl flex flex-col items-center justify-center border border-primary/20 shadow-sm transition-all group-hover:scale-105 active:scale-95 text-primary gap-0.5">
+                    ${getIcon('folder', 'sm')}
+                    <span class="text-[7px] font-black uppercase tracking-tighter leading-none">${currentLang === 'ar' ? 'مجلد' : 'Folder'}</span>
+                </div>
+                <div class="min-w-0">
+                    <h4 class="folder-title font-bold text-on-surface text-lg leading-snug group-hover:text-primary transition-colors truncate max-w-[500px] mb-1 select-none" 
+                        dir="auto">${folder.name}</h4>
+                </div>
+            </div>
+            <div class="col-span-4 flex flex-col items-start text-left rtl:items-end rtl:text-left">
+                <span class="text-[10px] font-black text-primary/40 uppercase tracking-widest">${folder.docCount} ${t('filter_items_suffix')}</span>
+            </div>
+        </div>
+    `;
+}
+
+async function openFolderRenameEditor(el, relativePath) {
+    if (el.dataset.editing === 'true') return;
+    el.dataset.editing = 'true';
+
+    const originalName = el.innerText;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = originalName;
+    input.className = 'w-full bg-surface-container-highest text-on-surface font-bold px-2 py-1 rounded border border-primary/40 outline-none focus:border-primary';
+    
+    const parent = el.parentNode;
+    parent.replaceChild(input, el);
+    input.focus();
+    input.select();
+
+    input.onclick = (e) => e.stopPropagation();
+    input.ondblclick = (e) => e.stopPropagation();
+
+    const finish = async (save) => {
+        const newName = input.value.trim();
+        if (save && newName && newName !== originalName) {
+            // Compute absolute paths
+            const oldAbsPath = storageBasePath + '/' + relativePath;
+            // Get parent directory of relativePath
+            const pathParts = relativePath.split('/');
+            pathParts.pop();
+            const parentRelativePath = pathParts.join('/');
+            const newAbsPath = storageBasePath + '/' + (parentRelativePath ? parentRelativePath + '/' : '') + newName;
+
+            const result = await window.api.renameFolder(oldAbsPath, newAbsPath);
+            if (result.success) {
+                // Refresh documents and view
+                const docs = await window.api.getDocuments();
+                documents = docs || [];
+                renderArchiveView(document.getElementById('global-search-input')?.value || '');
+            } else {
+                console.error('Rename failed:', result.error);
+                parent.replaceChild(el, input);
+                el.dataset.editing = 'false';
+            }
+        } else {
+            parent.replaceChild(el, input);
+            el.dataset.editing = 'false';
+        }
+    };
+
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter') finish(true);
+        if (e.key === 'Escape') finish(false);
+    };
+
+    input.onblur = () => finish(true); // Save on blur like Windows
+}
+
+let lastRightClickedFolderEl = null;
+
+function showFolderContextMenu(e, relativePath) {
+    const menu = document.getElementById('custom-context-menu');
+    if (!menu) return;
+
+    // Find the folder container and its title element
+    lastRightClickedFolderEl = e.currentTarget;
+    
+    menu.innerHTML = `
+        <div class="context-item" onclick="hideContextMenu(); openFolderRenameEditor(lastRightClickedFolderEl.querySelector('.folder-title'), '${relativePath.replace(/'/g, "\\'")}')">
+            ${getIcon('edit_note', 'sm')}
+            <span>${currentLang === 'ar' ? 'إعادة تسمية' : 'Rename'}</span>
+        </div>
+    `;
+
+    menu.style.display = 'block';
+    menu.style.left = e.pageX + 'px';
+    menu.style.top = e.pageY + 'px';
+
+    // Ensure menu stays within viewport
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth) menu.style.left = (e.pageX - menuRect.width) + 'px';
+    if (menuRect.bottom > window.innerHeight) menu.style.top = (e.pageY - menuRect.height) + 'px';
+}
+
+function hideContextMenu() {
+    const menu = document.getElementById('custom-context-menu');
+    if (menu) menu.style.display = 'none';
+}
+
+// Global listener to hide context menu
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('[oncontextmenu*="showFolderContextMenu"]')) {
+        hideContextMenu();
+    }
+});
 
 function renderArchiveGrid(data, container, isGrouped = false) {
     if (isGrouped ? data.length === 0 : data.length === 0) {
@@ -3781,6 +4092,9 @@ async function syncUpdateStatus(silent = true) {
         if (result.success && result.updateInfo && result.updateInfo.version !== currentVersion) {
             btn.classList.add('text-primary/80');
             btn.classList.remove('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
+            
+            versionText.classList.remove('bg-outline-variant/5', 'text-on-surface-variant/40', 'border-outline-variant/10');
+            versionText.classList.add('bg-primary/10', 'text-primary', 'border-primary/20', 'group-hover:bg-primary', 'group-hover:text-white');
 
             const comparison = t('version_comparison', { current: currentVersion, new: result.updateInfo.version });
             versionText.innerHTML = `
@@ -3799,6 +4113,9 @@ async function syncUpdateStatus(silent = true) {
         } else {
             btn.classList.add('text-on-surface-variant/40', 'pointer-events-none', 'cursor-default');
             btn.classList.remove('text-primary/80');
+            
+            versionText.classList.add('bg-outline-variant/5', 'text-on-surface-variant/40', 'border-outline-variant/10');
+            versionText.classList.remove('bg-primary/10', 'text-primary', 'border-primary/20', 'group-hover:bg-primary', 'group-hover:text-white');
 
             versionText.innerHTML = `
                 <div id="update-badge-container" class="mb-1">

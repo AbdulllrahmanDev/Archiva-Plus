@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('api', {
 
     // Document Editing
     updateDocument: (id, fields) => ipcRenderer.invoke('update-document', id, fields),
+    renameFolder: (oldPath, newPath) => ipcRenderer.invoke('rename-folder', oldPath, newPath),
     reprocessDocument: (id, filePath) => ipcRenderer.invoke('reprocess-document', id, filePath),
     stopProcessing: (id) => ipcRenderer.invoke('stop-processing', id),
     setNativeTheme: (theme) => ipcRenderer.send('set-native-theme', theme),
