@@ -710,7 +710,7 @@ const getViews = () => ({
                             <div class="px-10 py-7 border-b border-outline-variant/10 flex items-center justify-between">
                                 <div class="flex flex-col gap-1">
                                     <h3 class="text-[11px] font-black uppercase tracking-widest text-on-surface">${t('staged_archival')}</h3>
-                                    <p class="text-[10px] text-on-surface-variant/60 font-bold tracking-tight">Review assets before intelligence archival</p>
+
                                 </div>
                                 <div class="flex items-center gap-4 bg-surface-container-low/50 px-4 py-2 rounded-2xl border border-outline-variant/10">
                                     <div class="flex items-center gap-3">

@@ -264,23 +264,25 @@ def get_file_hash(file_path):
 
 
 def extract_text_from_pdf(file_path, doc_id=None):
+    """Extracts text from only the FIRST page of a PDF."""
     text = ""
     report_status("status_extracting", 20, doc_id=doc_id)
     try:
         doc = fitz.open(file_path)
-        for page in doc:
-            text += page.get_text()
+        if len(doc) > 0:
+            # Restricted to 1st page only as requested
+            text = doc[0].get_text()
         doc.close()
     except Exception as e:
         print(f"Error extracting text with PyMuPDF: {e}", flush=True)
 
-    # If text is too short, try OCR
+    # If text is too short, try OCR on the first page only
     if len(text.strip()) < 50:
         report_status("status_ocr", 50, doc_id=doc_id)
         try:
             doc = fitz.open(file_path)
-            for i in range(min(len(doc), 5)):  # OCR first 5 pages max for speed
-                page = doc.load_page(i)
+            if len(doc) > 0:
+                page = doc.load_page(0)  # Only first page
                 pix = page.get_pixmap()
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 text += pytesseract.image_to_string(img, lang="ara+eng")
@@ -302,14 +304,34 @@ def extract_text_from_image(file_path, doc_id=None):
         return ""
 
 
-def get_file_base64(file_path):
-    """Encodes a file to base64 for AI multimodal input."""
+def get_first_page_base64(file_path):
+    """
+    Extracts the first page of a document as base64.
+    If it's a PDF, it converts the first page to a high-quality JPEG image
+    to ensure the AI analyzes only that page.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
     try:
-        with open(file_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
+        if ext == ".pdf":
+            doc = fitz.open(file_path)
+            if len(doc) == 0:
+                return None, None
+            page = doc[0]
+            # Matrix(2, 2) for 2x resolution (higher quality for AI OCR)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_data = pix.tobytes("jpg")
+            doc.close()
+            return base64.b64encode(img_data).decode("utf-8"), "image/jpeg"
+        else:
+            # For images, return the whole file
+            with open(file_path, "rb") as f:
+                mime_type = "image/jpeg"
+                if ext == ".png": mime_type = "image/png"
+                elif ext == ".webp": mime_type = "image/webp"
+                return base64.b64encode(f.read()).decode("utf-8"), mime_type
     except Exception as e:
-        print(f"Error encoding file for AI: {e}", flush=True)
-        return None
+        print(f"Error extracting first page base64: {e}", flush=True)
+        return None, None
 
 
 def real_ai_analyze(text, filename, file_path=None):
@@ -385,28 +407,18 @@ def real_ai_analyze(text, filename, file_path=None):
         # الـ content الافتراضي: نص فقط
         content_parts = [{"type": "text", "text": prompt}]
 
-        # إضافة الملف (Multimodal) إذا كان متاحاً
+        # إضافة الصفحة الأولى (Multimodal) إذا كان متاحاً
         if file_path and os.path.exists(file_path):
-            base64_data = get_file_base64(file_path)
+            base64_data, mime_type = get_first_page_base64(file_path)
             if base64_data:
-                ext = os.path.splitext(file_path)[1].lower()
-                if ext == ".png":
-                    mime_type = "image/png"
-                elif ext == ".webp":
-                    mime_type = "image/webp"
-                elif ext == ".pdf":
-                    mime_type = "application/pdf"
-                else:
-                    mime_type = "image/jpeg"
-
-                # OpenRouter / Gemini يقبل PDF وصور عبر image_url بنفس الأسلوب
+                # OpenRouter / Gemini يقبل الصور عبر image_url
                 content_parts.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime_type};base64,{base64_data}"},
                 })
-                print(f"AI: Sending file as multimodal ({mime_type})", flush=True)
+                print(f"AI: Sending first page only as multimodal ({mime_type})", flush=True)
             else:
-                print("AI: Could not encode file to base64, sending text only.", flush=True)
+                print("AI: Could not extract first page, sending text only.", flush=True)
         else:
             print("AI: No file path provided, sending text only.", flush=True)
 
